@@ -1,0 +1,19 @@
+#!/bin/sh
+# Only main is pushed by default; every other branch stays local.
+# To publish another branch, add its name (one per line) to .githooks/push-allowed.
+# Enable with: git config core.hooksPath .githooks
+
+allowed="main"
+list="$(git rev-parse --show-toplevel)/.githooks/push-allowed"
+[ -f "$list" ] && allowed="$allowed $(grep -v '^#' "$list")"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  branch="${remote_ref#refs/heads/}"
+  ok=0
+  for a in $allowed; do [ "$branch" = "$a" ] && ok=1; done
+  if [ "$ok" -ne 1 ]; then
+    echo "pre-push: refusing to push '$branch' (local-only; see .githooks/push-allowed)" >&2
+    exit 1
+  fi
+done
+exit 0

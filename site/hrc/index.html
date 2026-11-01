@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>HRC ratio</title>
-    <meta name="description" content="HRC testbed: merge-read, parity and equal-footprint variants against an exact reference, with sky, bounces and volumetric strokes." />
+    <title>HRC</title>
+    <meta name="description" content="Testbed for trying new HRC things forked from my 'production' version" />
     <style>
       *,
       *::before,
@@ -555,10 +555,10 @@
 
     <script type="module">
       import { ShapeEditor } from '../_shared/shape-editor';
-      import { HRCRatio, SCENE_SPAN } from './hrc-ratio';
+      import { HRC, SCENE_SPAN } from './hrc';
 
       const $ = (id) => document.getElementById(id);
-      const hrc = new HRCRatio($('hrc'), { pixelPerfect: 1024, probeCount: 1024 });
+      const hrc = new HRC($('hrc'), { pixelPerfect: 1024, probeCount: 1024 });
       const editor = new ShapeEditor($('shapes'), hrc.shapes, () => {
         const r = squareRect();
         return { left: r.left, top: r.top, size: r.width };

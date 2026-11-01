@@ -114,7 +114,7 @@ function nearTaps(): { data: Float32Array; offsets: number[][]; ends: number[][]
     ends.push(end);
   }
   for (let phase = 0; phase < 4; phase++) {
-    if (ends[phase][3] - offsets[phase][0] > NEAR_MAX_TAPS) throw new Error('hrc-ratio: near tap table exceeds NEAR_MAX_TAPS');
+    if (ends[phase][3] - offsets[phase][0] > NEAR_MAX_TAPS) throw new Error('hrc: near tap table exceeds NEAR_MAX_TAPS');
   }
   return { data: new Float32Array(out), offsets, ends };
 }
@@ -2236,7 +2236,7 @@ interface CascadePipelines {
 // ── Component ──
 
 /** Options that differ from the defaults; any reactive property can be given. */
-export type HRCRatioOptions = Partial<Pick<HRCRatio, (typeof REACTIVE_PROPS)[number]>>;
+export type HRCOptions = Partial<Pick<HRC, (typeof REACTIVE_PROPS)[number]>>;
 
 /** Scene units across the displayed square; shapes are in these units, centred on the square. */
 export const SCENE_SPAN = 1024;
@@ -2271,7 +2271,7 @@ const REACTIVE_PROPS = [
  * The HRC testbed renderer. It owns a canvas inside `host`, renders `shapes` (plain objects in scene units)
  * every frame, and reacts to assignments to its properties (see REACTIVE_PROPS).
  */
-export class HRCRatio {
+export class HRC {
   readonly host: HTMLElement;
   /** Scene shapes, read every frame; mutate the array and the objects freely. */
   shapes: Shape[] = [];
@@ -2326,7 +2326,7 @@ export class HRCRatio {
   /** Debug: suspend the internal render loop (frames can still be rendered with step()). */
   paused = false;
 
-  constructor(host: HTMLElement, options: HRCRatioOptions = {}) {
+  constructor(host: HTMLElement, options: HRCOptions = {}) {
     this.host = host;
     Object.assign(this, options);
     reactive(this, REACTIVE_PROPS, (changes) => this.#update(changes));
@@ -2510,7 +2510,7 @@ export class HRCRatio {
 
   #initTimestampQueries() {
     const device = this.#device;
-    const count = HRCRatio.TS_MAX_PASSES * 2;
+    const count = HRC.TS_MAX_PASSES * 2;
     this.#tsQuerySet = device.createQuerySet({ type: 'timestamp', count });
     this.#tsResolveBuffer = device.createBuffer({
       size: count * 8,
@@ -2532,7 +2532,7 @@ export class HRCRatio {
   #tsPass(label = ''): GPUComputePassTimestampWrites | GPURenderPassTimestampWrites | undefined {
     if (!this.#tsQuerySet) return undefined;
     const idx = this.#tsNextIdx;
-    if (idx + 1 >= HRCRatio.TS_MAX_PASSES * 2) return undefined;
+    if (idx + 1 >= HRC.TS_MAX_PASSES * 2) return undefined;
     this.#tsNextIdx = idx + 2;
     this.#tsLabels.push(label);
     return { querySet: this.#tsQuerySet, beginningOfPassWriteIndex: idx, endOfPassWriteIndex: idx + 1 };
@@ -3090,7 +3090,7 @@ export class HRCRatio {
         freeWorld: true,
         shareWith: occ,
       });
-      const cap = HRCRatio.EMITTER_CAPACITY;
+      const cap = HRC.EMITTER_CAPACITY;
       this.#emitterCounter = device.createBuffer({ label: 'Ratio-EmitterCount', size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
       this.#emitterBuffer = device.createBuffer({ label: 'Ratio-Emitters', size: cap * 32, usage: GPUBufferUsage.STORAGE });
       this.#freeFieldBuffer = device.createBuffer({
@@ -3140,7 +3140,7 @@ export class HRCRatio {
         this.#fftParamsBuffer = ubo('Ratio-FFTParams', 32 * 256);
         this.#fftGatherParamsBuffer = ubo('Ratio-GatherParams', 8 * 256);
       } else {
-        console.warn(`hrc-ratio: FFT line of ${P} complex values exceeds workgroup storage (${maxShared} B); using the direct free field`);
+        console.warn(`hrc: FFT line of ${P} complex values exceeds workgroup storage (${maxShared} B); using the direct free field`);
       }
     } else if (colorScale < 1) {
       const colorMax = Math.max(2, Math.round(probesMax * colorScale));

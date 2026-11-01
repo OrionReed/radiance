@@ -1,6 +1,6 @@
-# Radiance
+# RC stuff
 
-Experiments in radiance cascades and polygonal formulations of 2D light transport. There is one test per page.
+Experiments with radiance cascades stuff.
 
 ```
 npm install

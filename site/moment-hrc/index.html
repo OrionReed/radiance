@@ -711,7 +711,7 @@
       // A rectangle covers the cells whose centres it contains, at least one; strokes stamp size × size squares.
       // ════════════════════════════════════════════════════════════════════
       let E = null, A = null, cursor = null;
-      const raster = { subpixel: true };
+      const raster = { snap: false };
       function rasterise(N) {
         E.fill(0);
         A.fill(1);
@@ -722,7 +722,7 @@
           const i = cellIndex(gx, gy);
           if (i >= 0) ((E[i] = m.e), (A[i] = m.a));
         };
-        // subpixel: the material covers a fraction c of the cell. Emission mixes by area and media by optical depth.
+        // unsnapped: the material covers a fraction c of the cell. Emission mixes by area and media by optical depth.
         // Opaque material (walls, solid lights) takes the whole cell when it covers the centre, else nothing: averaging
         // its transmittance would let light through a thin wall (two half-covered cells pass 25 %, the wall passes 0).
         const OPAQUE = 0.01;
@@ -742,7 +742,7 @@
         };
         // a brush of `size` cells swept from a to b: each cell takes its largest coverage along the way
         const sweep = (ax, ay, bx, by, size, m) => {
-          if (!raster.subpixel) {
+          if (raster.snap) {
             const lo = (c) => Math.round(c - size / 2), n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) * 2)), sz = Math.max(1, Math.round(size));
             for (let t = 0; t <= n; t++) {
               const cx = ax + ((bx - ax) * t) / n, cy = ay + ((by - ay) * t) / n;
@@ -765,8 +765,8 @@
           let [x0, x1, y0, y1] = [g(s.x), g(s.x + s.w), g(s.y), g(s.y + s.h)];
           // opaque shapes are at least one cell thick (thinner would cover no cell centre)
           const widen = (a, b) => (b - a >= 1 ? [a, b] : [(a + b) / 2 - 0.5, (a + b) / 2 + 0.5]);
-          if (m.a < OPAQUE || !raster.subpixel) [[x0, x1], [y0, y1]] = [widen(x0, x1), widen(y0, y1)];
-          if (raster.subpixel) {
+          if (m.a < OPAQUE || raster.snap) [[x0, x1], [y0, y1]] = [widen(x0, x1), widen(y0, y1)];
+          if (!raster.snap) {
             coverBox(x0, x1, y0, y1, (i, c, centre) => over(i, m, c, centre));
             continue;
           }
@@ -846,10 +846,10 @@
       const PROBES = [64, 128, 256, 512, 1024];
       segmented($('scene-params'), { label: 'cells (N × N, one per pixel)', options: PROBES.map((n) => [n, String(n)]), ...field(cfg, 'N'), url: ['N', 512] });
       toggle($('scene-params'), {
-        label: 'subpixel',
-        title: 'lights and media cover cells by area (they move smoothly instead of snapping); opaque material still takes whole cells, by their centres',
-        ...field(raster, 'subpixel'),
-        url: ['subpixel', true],
+        label: 'snap to grid',
+        title: 'shapes and strokes take whole cells, so they snap as they move; off, lights and media cover cells by area and move smoothly (opaque material always takes whole cells, by their centres)',
+        ...field(raster, 'snap'),
+        url: ['snap', false],
       });
       segmented($('size-field'), { label: 'size (cells)', options: PEN_SIZES.map((n) => [n, String(n)]), get: () => pen.size, set: setPenSize });
 

@@ -1,0 +1,1187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Polygonal HRC</title>
+    <meta name="description" content="Polygonal HRC with visibility via occluder silhouettes" />
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      :root {
+        --bg: #0e0e0e;
+        --panel: #151515;
+        --line: rgba(255, 255, 255, 0.08);
+        --text: rgba(255, 255, 255, 0.82);
+        --dim: rgba(255, 255, 255, 0.45);
+        --faint: rgba(255, 255, 255, 0.28);
+        --ctl: rgba(255, 255, 255, 0.06);
+        --ctl-hover: rgba(255, 255, 255, 0.11);
+        --on: #d8d8d8;
+        --on-text: #111;
+        --accent: #7fc8a9;
+        --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+      }
+      body {
+        display: grid;
+        grid-template-columns: 236px minmax(0, 1fr) 252px;
+        background: var(--bg);
+        color: var(--text);
+        font: 12px/1.35 system-ui, -apple-system, 'Segoe UI', sans-serif;
+      }
+      #canvas-area {
+        position: relative;
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      /* ── Panels ── */
+      aside {
+        position: relative;
+        z-index: 10;
+        background: var(--panel);
+        overflow-y: auto;
+        scrollbar-width: thin;
+        user-select: none;
+        display: flex;
+        flex-direction: column;
+      }
+      #left {
+        border-right: 1px solid var(--line);
+      }
+      #right {
+        border-left: 1px solid var(--line);
+      }
+      section {
+        padding: 12px 12px 14px;
+        border-bottom: 1px solid var(--line);
+      }
+      section > h2 {
+        margin: 0 0 10px;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 1.4px;
+        text-transform: uppercase;
+        color: var(--dim);
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+      }
+      section > h2 small {
+        font-weight: 400;
+        letter-spacing: 0;
+        text-transform: none;
+        color: var(--faint);
+        font-family: var(--mono);
+      }
+      .field {
+        margin-top: 10px;
+      }
+      .field:first-of-type {
+        margin-top: 0;
+      }
+      .field > .label {
+        font-size: 11px;
+        color: var(--dim);
+        margin-bottom: 4px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .field > .label .val {
+        font-family: var(--mono);
+        color: var(--text);
+      }
+      .field.disabled {
+        opacity: 0.35;
+        pointer-events: none;
+      }
+      kbd {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--faint);
+        border: 1px solid var(--line);
+        border-radius: 3px;
+        padding: 0 3px;
+        line-height: 14px;
+      }
+
+      /* segmented pick-one */
+      .seg {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: 1fr;
+        gap: 2px;
+        background: var(--ctl);
+        border-radius: 6px;
+        padding: 2px;
+      }
+      .seg.wrap {
+        grid-auto-flow: row;
+        grid-template-columns: repeat(var(--cols, 3), 1fr);
+      }
+      .seg button {
+        font: inherit;
+        font-size: 11px;
+        color: var(--dim);
+        background: none;
+        border: 0;
+        border-radius: 4px;
+        padding: 4px 2px;
+        cursor: pointer;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .seg button:hover {
+        color: var(--text);
+        background: var(--ctl-hover);
+      }
+      .seg button.on {
+        background: var(--on);
+        color: var(--on-text);
+      }
+
+      /* on/off toggle */
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        font: inherit;
+        color: var(--text);
+        background: none;
+        border: 0;
+        padding: 5px 0;
+        cursor: pointer;
+        text-align: left;
+      }
+      .toggle .sw {
+        flex: none;
+        width: 26px;
+        height: 14px;
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.14);
+        position: relative;
+        transition: background 0.12s;
+      }
+      .toggle .sw::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.7);
+        transition: transform 0.12s;
+      }
+      .toggle.on .sw {
+        background: var(--accent);
+      }
+      .toggle.on .sw::after {
+        transform: translateX(12px);
+        background: #fff;
+      }
+      .toggle .name {
+        flex: 1;
+      }
+      .toggle:hover .name {
+        color: #fff;
+      }
+
+      /* scene list */
+      #scene-list {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1px 2px;
+      }
+      #scene-list .group {
+        grid-column: 1 / -1;
+        font-size: 10px;
+        color: var(--faint);
+        margin: 7px 0 1px;
+      }
+      #scene-list .group:first-child {
+        margin-top: 0;
+      }
+      #scene-list button {
+        font: inherit;
+        text-align: left;
+        color: var(--dim);
+        background: none;
+        border: 0;
+        border-radius: 4px;
+        padding: 3px 4px;
+        cursor: pointer;
+        display: flex;
+        gap: 4px;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      #scene-list button .idx {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--faint);
+        width: 13px;
+        flex: none;
+        text-align: right;
+        line-height: 16px;
+      }
+      #scene-list button:hover {
+        background: var(--ctl);
+        color: var(--text);
+      }
+      #scene-list button.on {
+        background: var(--on);
+        color: var(--on-text);
+      }
+      #scene-list button.on .idx {
+        color: rgba(0, 0, 0, 0.5);
+      }
+
+      /* sliders */
+      input[type='range'] {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 100%;
+        height: 16px;
+        background: transparent;
+        outline: none;
+        cursor: pointer;
+        margin: 0;
+      }
+      input[type='range']::-webkit-slider-runnable-track {
+        height: 3px;
+        background: rgba(255, 255, 255, 0.14);
+        border-radius: 2px;
+      }
+      input[type='range']::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.75);
+        border: none;
+        margin-top: -4.5px;
+      }
+      input[type='range']::-moz-range-track {
+        height: 3px;
+        background: rgba(255, 255, 255, 0.14);
+        border-radius: 2px;
+      }
+      input[type='range']::-moz-range-thumb {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.75);
+        border: none;
+      }
+
+      .hint {
+        margin-top: 8px;
+        font-size: 10.5px;
+        color: var(--faint);
+      }
+
+      /* legend */
+      #legend {
+        margin-top: 10px;
+      }
+      #legend .bar {
+        height: 10px;
+        border-radius: 2px;
+      }
+      #legend .ticks {
+        display: flex;
+        justify-content: space-between;
+        font-family: var(--mono);
+        font-size: 9px;
+        color: var(--faint);
+        margin-top: 2px;
+      }
+      #legend .caption {
+        font-size: 10.5px;
+        color: var(--faint);
+        margin-top: 4px;
+      }
+
+      /* status / tools */
+      #tools {
+        margin-top: auto;
+        padding: 8px 12px;
+        border-top: 1px solid var(--line);
+        border-bottom: 0;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      #tools button {
+        font: inherit;
+        font-size: 11px;
+        color: var(--dim);
+        background: var(--ctl);
+        border: 0;
+        border-radius: 4px;
+        padding: 3px 7px;
+        cursor: pointer;
+      }
+      #tools button:hover {
+        color: var(--text);
+        background: var(--ctl-hover);
+      }
+      #tools button.on {
+        background: var(--on);
+        color: var(--on-text);
+      }
+      #fps {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--dim);
+        margin-right: auto;
+      }
+
+
+      /* help + perf overlays (inside the canvas area) */
+      #help {
+        position: absolute;
+        right: 12px;
+        bottom: 12px;
+        z-index: 20;
+        background: rgba(12, 12, 12, 0.94);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px 12px;
+        display: none;
+        min-width: 230px;
+        font-size: 11px;
+        line-height: 1.75;
+      }
+      #help.open {
+        display: block;
+      }
+      #help .row {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+      }
+      #help .row span:last-child {
+        color: var(--dim);
+      }
+      /* the cascade's square (one canvas pixel per cell, scaled with nearest-neighbour sampling) */
+      #view {
+        position: absolute;
+        image-rendering: pixelated;
+        touch-action: none;
+        cursor: crosshair;
+      }
+      #overlay {
+        position: absolute;
+        pointer-events: none;
+      }
+      #view.grab {
+        cursor: grab;
+      }
+      #view.grabbing {
+        cursor: grabbing;
+      }
+      #error {
+        position: absolute;
+        inset: 0;
+        display: none;
+        place-items: center;
+        color: var(--dim);
+        padding: 24px;
+        text-align: center;
+      }
+      #error.open {
+        display: grid;
+      }
+    </style>
+  </head>
+  <body>
+    <aside id="left">
+      <section>
+        <h2>scene <small id="scene-id"></small></h2>
+        <div id="scene-list"></div>
+      </section>
+      <section>
+        <div id="scene-params"></div>
+      </section>
+      <section id="pen">
+        <h2><span id="pen-title">pen</span> <small id="pen-sub">draw on the canvas</small></h2>
+        <div id="pen-fields"></div>
+        <div id="size-field"></div>
+        <div class="hint">solid light = opaque and glowing · wall = opaque · everything takes whole cells · drag a shape to move it · the cursor previews the pen</div>
+      </section>
+    </aside>
+
+    <div id="canvas-area">
+      <canvas id="view"></canvas>
+      <canvas id="overlay"></canvas>
+      <div id="help"></div>
+      <div id="error"></div>
+    </div>
+
+    <aside id="right">
+      <section>
+        <h2>occluder silhouettes</h2>
+        <div id="silhouettes"></div>
+        <div class="hint">Every cone tile of length L whose apex is the pointer (snapped to multiples of L), in all four quadrants: its
+          directions over its own interval (L to 2L from the apex), its occluder silhouettes shaded (grey occluders, orange light, by the
+          light each keeps), and each silhouette's two extreme corners circled. The cursor stops previewing the pen.</div>
+      </section>
+      <section>
+        <h2>output</h2>
+        <div id="output"></div>
+        <div id="legend"></div>
+      </section>
+      <section id="tools">
+        <span id="fps" title="cascade frame: scene upload + four quadrants + draw, submit to done (recomputed only when the scene changes)"></span>
+        <button id="shot-btn" title="screenshot (s)">shot</button>
+        <button id="help-btn" title="keyboard shortcuts (?)">?</button>
+      </section>
+    </aside>
+
+    <script type="module">
+      // Polygonal HRC: interactive page. Scenes are plain data (rectangles in scene units), rasterised on the CPU
+      // into emission E and transmittance A (opaque: A = 0).
+      import { PolygonalHRC } from './polygonal-hrc.js';
+
+      const $ = (id) => document.getElementById(id);
+      const el = (tag, props = {}, ...children) => {
+        const e = Object.assign(document.createElement(tag), props);
+        e.append(...children);
+        return e;
+      };
+      const view = $('view');
+
+      // ════════════════════════════════════════════════════════════════════
+      // State. cfg rebuilds the cascade when it changes; out only redraws.
+      // ════════════════════════════════════════════════════════════════════
+      const cfg = { N: 256 };
+      const out = { view: 'fluence', map: 'tone', exposure: 2, dither: true };
+      const silhouetteView = { on: false, L: 16 };   // the occluder-silhouette overlay
+      let apex = null, overlayDirty = false;   // the overlay's apex: scene corner (y up), snapped to multiples of L
+      let dirty = true, redraw = true;
+      const touch = () => (dirty = true);
+
+      // ════════════════════════════════════════════════════════════════════
+      // Controls (as moment-hrc.html): a toggle is an on/off; a segmented control picks one of several.
+      // Each spec: { label, get(), set(v), enabled?(), key?, title?, url?: [name, default] }.
+      // ════════════════════════════════════════════════════════════════════
+      const controls = [];
+      const field = (obj, name, after = touch) => ({ get: () => obj[name], set: (v) => ((obj[name] = v), after()) });
+
+      function toggle(parent, spec) {
+        const sw = el('span', { className: 'sw' });
+        const b = el('button', { className: 'toggle', title: spec.title ?? '' }, sw, el('span', { className: 'name', textContent: spec.label }));
+        if (spec.key) b.append(el('kbd', { textContent: spec.key }));
+        b.addEventListener('click', () => {
+          spec.set(!spec.get());
+          changed();
+        });
+        const wrap = el('div', { className: 'field' }, b);
+        parent.append(wrap);
+        controls.push({ spec, sync: () => b.classList.toggle('on', !!spec.get()), wrap });
+      }
+
+      function segmented(parent, spec) {
+        const seg = el('div', { className: 'seg' + (spec.cols ? ' wrap' : '') });
+        if (spec.cols) seg.style.setProperty('--cols', spec.cols);
+        const buttons = spec.options.map(([value, text, title]) => {
+          const b = el('button', { textContent: text, title: title ?? text });
+          b.addEventListener('click', () => {
+            spec.set(value);
+            changed();
+          });
+          seg.append(b);
+          return [value, b];
+        });
+        let wrap = seg;
+        if (spec.label) {
+          const label = el('div', { className: 'label' }, el('span', { textContent: spec.label }));
+          if (spec.key) label.append(el('kbd', { textContent: spec.key }));
+          wrap = el('div', { className: 'field', title: spec.title ?? '' }, label, seg);
+        }
+        parent.append(wrap);
+        controls.push({ spec, sync: () => buttons.forEach(([v, b]) => b.classList.toggle('on', v === spec.get())), wrap });
+      }
+
+      function slider(parent, spec) {
+        const val = el('span', { className: 'val' });
+        const input = el('input', { type: 'range', min: spec.min, max: spec.max, step: spec.step });
+        input.addEventListener('input', () => {
+          spec.set(Number(input.value));
+          changed();
+        });
+        const wrap = el('div', { className: 'field', title: spec.title ?? '' }, el('div', { className: 'label' }, el('span', { textContent: spec.label }), val), input);
+        parent.append(wrap);
+        controls.push({
+          spec,
+          sync: () => {
+            input.value = spec.get();
+            val.textContent = spec.format ? spec.format(spec.get()) : spec.get();
+          },
+          wrap,
+        });
+      }
+
+      function refresh() {
+        for (const c of controls) {
+          c.sync();
+          if (c.spec.enabled) c.wrap.classList.toggle('disabled', !c.spec.enabled());
+        }
+        renderLegend();
+      }
+      function changed() {
+        refresh();
+        syncURL();
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // Scenes: a registry. Coordinates are scene units with the origin at the square's centre and 1024 units across,
+      // independent of N. A shape is { x, y, w, h, b } (top-left, y down; b = radiance, 0 for a wall). Every shape is opaque.
+      // The test scenes are drawn on a 64-cell grid (16 units a cell).
+      // ════════════════════════════════════════════════════════════════════
+      const SPAN = 1024, U = SPAN / 64;
+      let shapes = [], strokes = [];
+      const scenes = [];
+      const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const scene = (group, name, list) => scenes.push({ id: slug(name), group, name, list });
+      const rng = (seed) => () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
+      // a block of 64-grid cells [x0, x1) × [y0, y1), rows y up
+      const cells = (x0, x1, y0, y1, b) => [(x0 - 32) * U, (32 - y1) * U, (x1 - x0) * U, (y1 - y0) * U, b];
+      const SLIT_LIGHT = cells(10, 12, 31, 33, 1);
+
+      scene('test scenes', 'Solid 2×2', [cells(31, 33, 31, 33, 1)]);
+      scene('test scenes', 'Solid 10×10', [cells(27, 37, 27, 37, 1)]);
+      scene('test scenes', 'Rect 7×3', [cells(28, 35, 31, 34, 1)]);
+      scene('test scenes', 'Blob', (() => {
+        const r = rng(5), m = new Set(['32,32']);
+        while (m.size < 61) {
+          const [x, y] = [...m][Math.floor(r() * m.size)].split(',').map(Number), d = [[1, 0], [-1, 0], [0, 1], [0, -1]][Math.floor(r() * 4)];
+          m.add(`${x + d[0]},${y + d[1]}`);
+        }
+        return [...m].map((k) => { const [x, y] = k.split(',').map(Number); return cells(x, x + 1, y, y + 1, 1); });
+      })());
+      scene('test scenes', 'Slit', [SLIT_LIGHT, cells(22, 23, 6, 31, 0), cells(22, 23, 33, 58, 0)]);
+      scene('test scenes', 'Clutter', (() => {
+        const r = rng(3), list = [SLIT_LIGHT];
+        for (let x = 18; x < 64; x++) for (let y = 0; y < 64; y++) if (r() < 0.05) list.push(cells(x, x + 1, y, y + 1, 0));
+        return list;
+      })());
+      scene('scenes', 'Pinhole', [
+        [-200, -84, 16, 24, 0.35], [-200, -60, 16, 24, 0.55], [-200, -36, 16, 24, 0.7], [-200, -12, 16, 24, 0.65],
+        [-200, 12, 16, 24, 0.7], [-200, 36, 16, 24, 0.45], [-200, 60, 16, 24, 0.4],
+        [-5, -500, 8, 488, 0], [-5, 12, 8, 500, 0],
+      ]);
+      scene('scenes', 'Two lights', [[-200, -100, 40, 40, 0.4], [-200, 60, 40, 40, 0.45], [-40, -80, 20, 160, 0], [100, -120, 10, 240, 0.8]]);
+      scene('scenes', 'Slats', [[-300, -30, 30, 60, 0.8], ...Array.from({ length: 9 }, (_, i) => [-40, -200 + i * 48, 12, 24, 0]), [150, -60, 4, 120, 0]]);
+      scene('scenes', 'Thin walls', [[200, -10, 20, 20, 0.8], [-200, -80, 400, 1, 0], [-200, -20, 400, 2, 0], [-200, 40, 400, 4, 0], [-200, 110, 400, 8, 0]]);
+      scene('scenes', 'Room', [
+        [-250, -200, 500, 12, 0], [-250, 188, 500, 12, 0], [-250, -200, 12, 400, 0], [238, -200, 12, 400, 0],
+        [-120, -120, 8, 8, 0.8], [120, 90, 6, 6, 0.5], [-20, -20, 60, 40, 0], [60, -140, 8, 120, 0],
+      ]);
+      scene('scenes', 'Empty', []);
+
+      // ── Scene switching ──
+      let currentScene = 0;
+      const sceneButtons = [];
+      function switchScene(index) {
+        currentScene = (index + scenes.length) % scenes.length;
+        document.activeElement?.blur();
+        shapes = scenes[currentScene].list.map(([x, y, w, h, b]) => ({ x, y, w, h, b }));
+        strokes = [];
+        selectShape(null);
+        sceneButtons.forEach((b, i) => b.classList.toggle('on', i === currentScene));
+        $('scene-id').textContent = scenes[currentScene].id;
+        touch();
+        syncURL();
+      }
+      {
+        const list = $('scene-list');
+        let group = null;
+        scenes.forEach((s, i) => {
+          if (s.group !== group) list.append(el('div', { className: 'group', textContent: (group = s.group) }));
+          const b = el('button', { title: s.id }, el('span', { className: 'idx', textContent: i }), el('span', { textContent: s.name }));
+          b.addEventListener('click', () => {
+            switchScene(i);
+            changed();
+          });
+          list.append(b);
+          sceneButtons.push(b);
+        });
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // Rasterisation: scene units → cells. Cell (gx, gy) with gy down is index gx·N + (N − 1 − gy) (y up).
+      // A rectangle covers the cells whose centres it contains, at least one cell thick; strokes stamp size × size squares.
+      // ════════════════════════════════════════════════════════════════════
+      let E = null, A = null, cursor = null;
+      function rasterise(N) {
+        E.fill(0);
+        A.fill(1);
+        const k = N / SPAN, g = (u) => (u + SPAN / 2) * k;
+        const put = (gx, gy, b) => {
+          if (gx >= 0 && gy >= 0 && gx < N && gy < N) ((E[gx * N + (N - 1 - gy)] = b), (A[gx * N + (N - 1 - gy)] = 0));
+        };
+        const widen = (a, b) => (b - a >= 1 ? [a, b] : [(a + b) / 2 - 0.5, (a + b) / 2 + 0.5]);
+        const box = (x0, x1, y0, y1, b) => {
+          [[x0, x1], [y0, y1]] = [widen(x0, x1), widen(y0, y1)];
+          for (let x = Math.round(x0); x < Math.round(x1); x++) for (let y = Math.round(y0); y < Math.round(y1); y++) put(x, y, b);
+        };
+        const sweep = (ax, ay, bx, by, size, b) => {
+          const lo = (c) => Math.round(c - size / 2), n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) * 2)), sz = Math.max(1, Math.round(size));
+          for (let t = 0; t <= n; t++) {
+            const cx = ax + ((bx - ax) * t) / n, cy = ay + ((by - ay) * t) / n;
+            for (let x = lo(cx); x < lo(cx) + sz; x++) for (let y = lo(cy); y < lo(cy) + sz; y++) put(x, y, b);
+          }
+        };
+        for (const s of shapes) box(g(s.x), g(s.x + s.w), g(s.y), g(s.y + s.h), s.b);
+        for (const s of strokes) sweep(g(s.x0), g(s.y0), g(s.x1), g(s.y1), s.size * k, s.b);
+        if (cursor && pen.kind !== 'eraser' && !drag && !silhouetteView.on) sweep(g(cursor[0]), g(cursor[1]), g(cursor[0]), g(cursor[1]), pen.size, penRadiance());
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // Pen / shape inspector: a kind plus brightness (radiance of a solid light)
+      // ════════════════════════════════════════════════════════════════════
+      const KINDS = [
+        ['solid', 'solid light', 'opaque and glowing'],
+        ['wall', 'wall', 'opaque, dark'],
+        ['eraser', 'eraser', 'erase strokes'],
+      ];
+      const pen = { kind: 'solid', brightness: 0.8, size: 2 };
+      let selected = null;
+      const penRadiance = () => (pen.kind === 'solid' ? pen.brightness : 0);
+      const PEN_SIZES = [1, 2, 4, 8, 16, 32]; // cells of the N × N grid
+      const setPenSize = (v) => ((pen.size = v), touch(), refresh());
+      const stepPenSize = (d) => setPenSize(PEN_SIZES[Math.max(0, Math.min(PEN_SIZES.length - 1, PEN_SIZES.indexOf(pen.size) + d))] ?? 2);
+      const kindOf = (s) => (s.b > 0 ? 'solid' : 'wall');
+      const penGet = (key) => (selected ? (key === 'kind' ? kindOf(selected) : selected.b > 0 ? selected.b : pen.brightness) : pen[key]);
+      const setPen = (key, v) => {
+        if (selected) {
+          if (key === 'kind' && v !== 'eraser') selected.b = v === 'solid' ? pen.brightness : 0;
+          if (key === 'brightness' && selected.b > 0) selected.b = v;
+        } else pen[key] = v;
+        touch();
+      };
+      segmented($('pen-fields'), { options: KINDS, get: () => penGet('kind'), set: (k) => setPen('kind', k) });
+      slider($('pen-fields'), {
+        label: 'brightness',
+        title: 'radiance of the solid light (mono)',
+        min: 0.05, max: 2, step: 0.01,
+        get: () => penGet('brightness'), set: (v) => setPen('brightness', v), format: (v) => v.toFixed(2),
+        enabled: () => penGet('kind') === 'solid',
+      });
+      function syncPen() {
+        $('pen-title').textContent = selected ? 'shape' : 'pen';
+        $('pen-sub').textContent = selected ? 'selected · ⌫ deletes · esc' : 'draw on the canvas';
+        $('size-field').style.display = selected ? 'none' : '';
+        refresh();
+      }
+      function selectShape(s) {
+        selected = s;
+        syncPen();
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // Panels
+      // ════════════════════════════════════════════════════════════════════
+      const SIZES = [64, 128, 256, 512];
+      segmented($('scene-params'), { label: 'cells (N × N, one per pixel)', options: SIZES.map((n) => [n, String(n)]), ...field(cfg, 'N'), url: ['N', 256] });
+      segmented($('size-field'), { label: 'size (cells)', options: PEN_SIZES.map((n) => [n, String(n)]), get: () => pen.size, set: setPenSize });
+
+      const O = $('output');
+      const redrawOnly = () => (redraw = true);
+      segmented(O, { label: 'view', key: 'v', title: 'fluence, or the rasterised scene', options: [['fluence', 'fluence'], ['scene', 'scene']], ...field(out, 'view', redrawOnly), url: ['view', 'fluence'] });
+      segmented(O, { label: 'map', key: 'b', options: [['tone', 'tonemap'], ['banded', 'banded']], ...field(out, 'map', redrawOnly), url: ['map', 'tone'] });
+      slider(O, {
+        label: 'exposure',
+        title: 'shown: mean radiance L = fluence / 2π, times the exposure (tonemap 1 − e^−L); banded shows log10(L · exposure)',
+        min: -1, max: 3, step: 0.05, // slider in log10(exposure)
+        get: () => Math.log10(out.exposure),
+        set: (v) => ((out.exposure = +(10 ** v).toPrecision(3)), redrawOnly()),
+        format: (v) => String(+(10 ** v).toPrecision(3)),
+      });
+      const showSilhouettes = () => ((overlayDirty = true), (redraw = true));
+      toggle($('silhouettes'), { label: 'show occluder silhouettes', key: 'r', ...field(silhouetteView, 'on', () => (touch(), showSilhouettes())), url: ['silhouettes', false] });
+      segmented($('silhouettes'), {
+        label: 'tile length L',
+        options: [2, 4, 8, 16, 32, 64, 128].map((n) => [n, String(n)]),
+        ...field(silhouetteView, 'L', () => ((apex = apex && snapApex(apex)), showSilhouettes())),
+        enabled: () => silhouetteView.on,
+        url: ['L', 16],
+      });
+      toggle(O, { label: 'dither', title: 'display only: ±1 LSB triangular noise per screen pixel before 8-bit output, removes banding', ...field(out, 'dither', redrawOnly), url: ['dither', true] });
+
+      // ── Legend (viridis, same samples as the draw shader) ──
+      const VIRIDIS = [
+        [0.267, 0.0049, 0.3294], [0.2823, 0.095, 0.4173], [0.2788, 0.1755, 0.4834], [0.259, 0.2515, 0.5247],
+        [0.2297, 0.3224, 0.5457], [0.1994, 0.3876, 0.5546], [0.1727, 0.4488, 0.5579], [0.149, 0.5081, 0.5573],
+        [0.1276, 0.5669, 0.5506], [0.1206, 0.6258, 0.5335], [0.1579, 0.6838, 0.5017], [0.2461, 0.7389, 0.452],
+        [0.3692, 0.7889, 0.3829], [0.516, 0.8312, 0.2943], [0.6785, 0.8637, 0.1895], [0.8456, 0.8873, 0.0997],
+        [0.9932, 0.9062, 0.1439],
+      ];
+      const viridis = (t) => {
+        const s = Math.max(0, Math.min(1, t)) * 16, i = Math.min(Math.floor(s), 15), f = s - i;
+        return `rgb(${VIRIDIS[i].map((a, k) => Math.round((a + (VIRIDIS[i + 1][k] - a) * f) * 255)).join(',')})`;
+      };
+      function renderLegend() {
+        const L = $('legend');
+        L.innerHTML = '';
+        if (out.view !== 'fluence' || out.map === 'tone') return;
+        const stops = [];
+        for (let i = 0; i < 22; i++) stops.push(`${viridis(i / 21)} ${(i / 22) * 100}% ${((i + 1) / 22) * 100}%`);
+        const ticks = ['−2.2', '−1.65', '−1.1', '−0.55', '0'];
+        const caption = 'log10(L · exposure), L = fluence / 2π, 10 bands per decade; walls black, lights red';
+        const b = el('div', { className: 'bar' });
+        b.style.background = `linear-gradient(to right, ${stops.join(',')})`;
+        L.append(b, el('div', { className: 'ticks' }, ...ticks.map((t) => el('span', { textContent: t }))), el('div', { className: 'caption', textContent: caption }));
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // URL state: every control with url: [name, default] round-trips; plus scene and exposure.
+      // ════════════════════════════════════════════════════════════════════
+      const enc = (v) => (v === true ? '1' : v === false ? '0' : String(v));
+      const dec = (s, def) => (typeof def === 'boolean' ? s === '1' : typeof def === 'number' ? Number(s) : s);
+      let urlReady = false;
+      function syncURL() {
+        if (!urlReady) return;
+        const p = new URLSearchParams();
+        if (currentScene !== 0) p.set('scene', scenes[currentScene].id);
+        for (const { spec } of controls) {
+          if (!spec.url) continue;
+          const [name, def] = spec.url, v = spec.get();
+          if (v !== def) p.set(name, enc(v));
+        }
+        if (out.exposure !== 2) p.set('exposure', String(out.exposure));
+        const qs = p.toString();
+        history.replaceState(null, '', qs ? '?' + qs : location.pathname);
+      }
+      function loadURL() {
+        const p = new URLSearchParams(location.search);
+        for (const { spec } of controls) {
+          if (!spec.url) continue;
+          const [name, def] = spec.url;
+          spec.set(p.has(name) ? dec(p.get(name), def) : def);
+        }
+        if (!SIZES.includes(cfg.N)) cfg.N = 256;
+        out.exposure = Number(p.get('exposure')) || 2;
+        const s = p.get('scene') ?? '0';
+        const byId = scenes.findIndex((x) => x.id === s);
+        return byId >= 0 ? byId : Number.isFinite(Number(s)) ? Number(s) : 0;
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // WebGPU: the cascade (rebuilt when N changes) and a draw pass straight from its output buffer.
+      // ════════════════════════════════════════════════════════════════════
+      const fail = (msg) => {
+        $('error').textContent = msg;
+        $('error').classList.add('open');
+      };
+      const adapter = await navigator.gpu?.requestAdapter();
+      if (!adapter) {
+        fail('WebGPU is not available in this browser.');
+        throw new Error('no WebGPU');
+      }
+      const device = await adapter.requestDevice({
+        requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize },
+      });
+      device.addEventListener('uncapturederror', (e) => {
+        console.error(e.error.message);
+        fail(e.error.message);
+      });
+      const ctx = view.getContext('webgpu');
+      const format = navigator.gpu.getPreferredCanvasFormat();
+      ctx.configure({ device, format, alphaMode: 'opaque' });
+
+      // fluence is at cell corners ((N + 1)², corners 1 .. N − 1 computed): each open cell shows one flat value, the mean of
+      // its four corners (crisp cells, no smoothing); opaque cells show their own surface
+      const drawModule = device.createShaderModule({
+        code: /* wgsl */ `
+        @group(0) @binding(0) var<storage, read> F: array<f32>;
+        @group(0) @binding(1) var<storage, read> A: array<f32>;
+        @group(0) @binding(2) var<storage, read> E: array<f32>;
+        struct Draw {
+          P: vec4f,   // N, exposure / 2π (fluence → mean radiance), map (0 tone, 1 banded), view (0 fluence, 1 scene)
+          Q: vec4f,   // canvas size in device pixels, dither (0 / 1), unused
+        }
+        @group(0) @binding(3) var<uniform> D: Draw;
+        const VIR = array<vec3f, 17>(${VIRIDIS.map((c) => `vec3f(${c.join(', ')})`).join(', ')});
+        fn viridis(t: f32) -> vec3f {
+          let s = clamp(t, 0.0, 1.0) * 16.0; let i = min(u32(s), 15u);
+          return mix(VIR[i], VIR[i + 1u], s - f32(i));
+        }
+        fn srgb(c: vec3f) -> vec3f { return select(1.055 * pow(c, vec3f(1.0 / 2.4)) - 0.055, 12.92 * c, c <= vec3f(0.0031308)); }
+        @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+          let p = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0)); return vec4f(p[i], 0.0, 1.0);
+        }
+        fn hash(p: vec2f) -> f32 { return fract(sin(dot(p, vec2f(12.9898, 78.233))) * 43758.5453); }
+        fn dither(c: vec3f, q: vec2f) -> vec4f {
+          let n = (hash(q) + hash(q + vec2f(17.3, 5.1)) - 1.0) / 255.0;
+          return vec4f(c + n * D.Q.z, 1.0);
+        }
+        fn corner(x: i32, y: i32) -> f32 {
+          let n = i32(D.P.x); return F[clamp(x, 1, n - 1) * (n + 1) + clamp(y, 1, n - 1)];
+        }
+        @fragment fn fs(@builtin(position) q: vec4f) -> @location(0) vec4f {
+          let P = D.P;
+          let N = i32(P.x); let u = q.xy / D.Q.xy * P.x;   // cell units, y down
+          let cell = vec2i(floor(u));
+          let i = cell.x * N + (N - 1 - cell.y);
+          let a = A[i]; let e = E[i];
+          if (P.w > 0.5) {   // the rasterised scene
+            var c = vec3f(0.04) + vec3f(0.55) * (1.0 - a);
+            if (e > 0.0) { c = vec3f(1.0, 0.75, 0.4) * min(1.0, 0.25 + e); }
+            return vec4f(c, 1.0);
+          }
+          let opaque = a <= 0.0;
+          let c0 = vec2i(cell.x, N - 1 - cell.y);   // the cell's lower-left corner, y up
+          let f = max(0.25 * (corner(c0.x, c0.y) + corner(c0.x + 1, c0.y) + corner(c0.x, c0.y + 1) + corner(c0.x + 1, c0.y + 1)), 0.0) * P.y;
+          if (P.z > 0.5) {   // banded
+            if (opaque) { return vec4f(select(vec3f(0.0), vec3f(0.85, 0.15, 0.1), e > 0.0), 1.0); }
+            let lv = log(max(f, 1e-9)) / log(10.0);
+            let s = (floor(lv * 10.0) / 10.0 + 2.2) / 2.2;
+            return dither(srgb(viridis(s)), q.xy);
+          }
+          if (opaque) {   // surfaces: their own radiance, walls dark slate
+            if (e > 0.0) { return vec4f(srgb(vec3f(min(1.0, e * 1.25))), 1.0); }
+            return vec4f(0.11, 0.115, 0.13, 1.0);
+          }
+          return dither(srgb(vec3f(1.0 - exp(-f))), q.xy);
+        }`,
+      });
+      const drawPipe = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: { module: drawModule, entryPoint: 'vs' },
+        fragment: { module: drawModule, entryPoint: 'fs', targets: [{ format }] },
+        primitive: { topology: 'triangle-list' },
+      });
+      const drawU = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+      let cascade = null, cascadeKey = '', drawBG = null;
+      function engine() {
+        const key = JSON.stringify(cfg);
+        if (key === cascadeKey) return cascade;
+        cascade?.destroy();
+        const N = cfg.N;
+        cascade = new PolygonalHRC(device, N);
+        cascadeKey = key;
+        E = new Float32Array(N * N);
+        A = new Float32Array(N * N);
+        drawBG = device.createBindGroup({
+          layout: drawPipe.getBindGroupLayout(0),
+          entries: [cascade.fluenceBuffer, cascade.transmittanceBuffer, cascade.emissionBuffer, drawU].map((buffer, binding) => ({ binding, resource: { buffer } })),
+        });
+        layout();
+        return cascade;
+      }
+      function encodeDraw(enc, g) {
+        const mapId = { tone: 0, banded: 1 }[out.map];
+        device.queue.writeBuffer(drawU, 0, new Float32Array([
+          g.N, out.exposure / (2 * Math.PI), mapId, out.view === 'scene' ? 1 : 0,
+          view.width, view.height, out.dither ? 1 : 0, 0,
+        ]));
+        const pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
+        pass.setPipeline(drawPipe);
+        pass.setBindGroup(0, drawBG);
+        pass.draw(3);
+        pass.end();
+      }
+
+      // ── layout: the largest square in the canvas area, 32 px margin ──
+      const squareRect = () => view.getBoundingClientRect();
+      function layout() {
+        const r = $('canvas-area').getBoundingClientRect();
+        const d = Math.max(64, Math.floor(Math.min(r.width - 64, r.height - 64)));
+        Object.assign(view.style, { width: d + 'px', height: d + 'px', left: Math.floor((r.width - d) / 2) + 'px', top: Math.floor((r.height - d) / 2) + 'px' });
+        view.width = view.height = Math.round(d * (window.devicePixelRatio || 1));
+        Object.assign(overlay.style, { width: view.style.width, height: view.style.height, left: view.style.left, top: view.style.top });
+        overlay.width = overlay.height = view.width;
+        redraw = overlayDirty = true;
+      }
+      window.addEventListener('resize', layout);
+
+      // ── frame loop: recompute only when the scene changed, redraw when the output settings changed ──
+      let busy = false, frameMs = 0, solveN = 0;
+      async function frame() {
+        requestAnimationFrame(frame);
+        if (busy || !(dirty || redraw)) return;
+        busy = true;
+        const solve = dirty;
+        dirty = redraw = false;
+        const fresh = cascade === null || JSON.stringify(cfg) !== cascadeKey;
+        const g = engine();
+        const t0 = performance.now();
+        const enc = device.createCommandEncoder();
+        if (solve) {
+          rasterise(g.N);
+          g.upload(E, A);
+          g.encodeAll(enc);
+        }
+        encodeDraw(enc, g);
+        device.queue.submit([enc.finish()]);
+        await device.queue.onSubmittedWorkDone();
+        if (solve || overlayDirty) await drawSilhouettes(g);
+        if (solve && !fresh) {   // the first solve after a rebuild includes pipeline compilation
+          const ms = performance.now() - t0;
+          frameMs = solveN === g.N ? frameMs + (ms - frameMs) * 0.3 : ms;   // restart at a new N
+          solveN = g.N;
+        }
+        busy = false;
+      }
+      setInterval(() => ($('fps').textContent = solveN === cfg.N ? `${solveN}² · ${frameMs.toFixed(1)} ms / frame` : `${cfg.N}² · move to time`), 250);
+
+      // ════════════════════════════════════════════════════════════════════
+      // Occluder-silhouette overlay: the cone tiles of length L whose apex is the pointer, in the four quadrants (quadrant k =
+      // np.rot90(scene, k); quadrant corner (i, j) is scene corner (j, N − i) for k = 1, etc.). Rebuilt after every solve.
+      // ════════════════════════════════════════════════════════════════════
+      const overlay = $('overlay'), octx = overlay.getContext('2d');
+      const toQuadrant = (k, [x, y], N) => [[x, y], [N - y, x], [N - x, N - y], [y, N - x]][k];
+      const fromQuadrant = (k, [i, j], N) => [[i, j], [j, N - i], [N - i, N - j], [N - j, i]][k];
+      const snapApex = ([x, y]) => {
+        const L = Math.min(silhouetteView.L, cfg.N / 2), c = (v) => Math.max(0, Math.min(cfg.N, Math.round(v / L) * L));
+        return [c(x), c(y)];
+      };
+      // a pixel's lowest and highest corner from a viewpoint, as offsets (pixel − viewpoint, x ≥ 1); as in the shader
+      const lowestCorner = ([dx, dy]) => (dy >= 0 ? [dx + 1, dy] : [dx, dy]);
+      const highestCorner = ([dx, dy]) => (dy + 1 >= 0 ? [dx, dy + 1] : [dx + 1, dy + 1]);
+      const slope = ([dx, dy]) => dy / dx;
+      async function drawSilhouettes(g) {
+        overlayDirty = false;
+        octx.clearRect(0, 0, overlay.width, overlay.height);
+        if (!silhouetteView.on || !apex) return;
+        const N = g.N, L = Math.min(silhouetteView.L, N / 2), cascade = Math.log2(L), queries = [];
+        for (let quadrant = 0; quadrant < 4; quadrant++) {
+          const [ax, ay] = toQuadrant(quadrant, apex, N);
+          for (let direction = -L; direction < L; direction++) queries.push({ quadrant, cascade, X: ax + L, y: ay + direction, direction, ax, ay });
+        }
+        const silhouettes = await g.silhouettesAt(queries);
+        const W = overlay.width, px = (quadrant, p) => { const [x, y] = fromQuadrant(quadrant, p, N); return [(x / N) * W, ((N - y) / N) * W]; };
+        const poly = (quadrant, pts) => { octx.beginPath(); pts.forEach((p, i) => octx[i ? 'lineTo' : 'moveTo'](...px(quadrant, p))); octx.closePath(); };
+        // a sector of slopes [s0, s1] from the apex over columns L .. 2L
+        const sector = (q, s0, s1) => [[q.X, q.ay + s0 * L], [q.X + L, q.ay + s0 * 2 * L], [q.X + L, q.ay + s1 * 2 * L], [q.X, q.ay + s1 * L]];
+        const peak = Math.max(1e-6, ...shapes.map((s) => s.b), ...strokes.map((s) => s.b));
+        octx.lineWidth = 1;
+        queries.forEach((q, i) => {
+          if (q.X + L > N) return;
+          const w0 = q.direction / L, w1 = (q.direction + 1) / L;
+          poly(q.quadrant, sector(q, w0, w1));
+          octx.strokeStyle = 'rgba(255, 255, 255, 0.07)';
+          octx.stroke();
+          for (const sil of silhouettes[i]) {
+            const d = (p) => [p[0] - q.ax, p[1] - q.ay];
+            const lowest = [lowestCorner(d(sil.lower)), lowestCorner(d(sil.upper))].reduce((a, b) => (slope(b) < slope(a) ? b : a));
+            const highest = [highestCorner(d(sil.lower)), highestCorner(d(sil.upper))].reduce((a, b) => (slope(b) > slope(a) ? b : a));
+            const c0 = Math.max(slope(lowest), w0), c1 = Math.min(slope(highest), w1);
+            if (c1 > c0) {
+              poly(q.quadrant, sector(q, c0, c1));
+              octx.fillStyle = sil.light > 0 ? `rgba(240, 168, 58, ${0.3 + 0.55 * Math.min(1, sil.light / peak)})` : 'rgba(150, 160, 185, 0.45)';
+              octx.fill();
+            }
+            octx.strokeStyle = sil.light > 0 ? 'rgba(255, 200, 120, 0.9)' : 'rgba(220, 225, 240, 0.8)';
+            for (const c of [lowest, highest]) {
+              octx.beginPath();
+              octx.arc(...px(q.quadrant, [q.ax + c[0], q.ay + c[1]]), Math.max(2, W / N / 4), 0, 2 * Math.PI);
+              octx.stroke();
+            }
+          }
+        });
+        const [x, y] = px(0, apex);
+        octx.fillStyle = '#fff';
+        octx.beginPath();
+        octx.arc(x, y, 3, 0, 2 * Math.PI);
+        octx.fill();
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // Tools: screenshot, help
+      // ════════════════════════════════════════════════════════════════════
+      function screenshot() {
+        const g = engine(), enc = device.createCommandEncoder();
+        encodeDraw(enc, g);
+        device.queue.submit([enc.finish()]);
+        view.toBlob((b) => b && Object.assign(document.createElement('a'), { href: URL.createObjectURL(b), download: `polygonal-hrc-${scenes[currentScene].id}-${g.N}-${Date.now()}.png` }).click());
+      }
+      $('shot-btn').addEventListener('click', screenshot);
+
+      const KEYS = [
+        ['← →', 'previous / next scene'],
+        ['⇧ 0–9', 'scene 0–9'],
+        ['1–3', 'pen: solid light, wall, eraser'],
+        ['+ −', 'pen size'],
+        ['r', 'show occluder silhouettes'],
+        ['v', 'fluence / scene view'],
+        ['b', 'banded view'],
+        ['n', 'new shape'],
+        ['⌫', 'delete selected shape'],
+        ['c', 'clear drawing'],
+        ['s', 'screenshot'],
+        ['t', 'GPU stage timings (console)'],
+        ['?', 'this help'],
+      ];
+      const help = $('help');
+      KEYS.forEach(([k, d]) => help.append(el('div', { className: 'row' }, el('span', {}, ...k.split(' ').map((x) => el('kbd', { textContent: x }))), el('span', { textContent: d }))));
+      const toggleHelp = (force) => {
+        help.classList.toggle('open', force);
+        $('help-btn').classList.toggle('on', help.classList.contains('open'));
+      };
+      $('help-btn').addEventListener('click', () => toggleHelp());
+
+      // ════════════════════════════════════════════════════════════════════
+      // Keyboard
+      // ════════════════════════════════════════════════════════════════════
+      document.addEventListener('keydown', async (e) => {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        const t = e.target;
+        if (t instanceof HTMLInputElement && t.type === 'range' && e.key.startsWith('Arrow')) return;
+        const d = e.code.match(/^Digit(\d)$/);
+        if (d) {
+          e.preventDefault();
+          if (e.shiftKey) {
+            switchScene(+d[1]);
+            changed();
+          } else if (+d[1] >= 1 && +d[1] <= KINDS.length) ((pen.kind = KINDS[+d[1] - 1][0]), selectShape(null), touch());
+          return;
+        }
+        let handled = true;
+        switch (e.key) {
+          case 'r': case 'R': silhouetteView.on = !silhouetteView.on; touch(); showSilhouettes(); changed(); break;
+          case 'v': case 'V': out.view = out.view === 'scene' ? 'fluence' : 'scene'; redraw = true; changed(); break;
+          case 'b': case 'B': out.map = out.map === 'banded' ? 'tone' : 'banded'; redraw = true; changed(); break;
+          case '?': toggleHelp(); break;
+          case 'Escape': toggleHelp(false); selectShape(null); break;
+          case '=': case '+': stepPenSize(1); break;
+          case '-': case '_': stepPenSize(-1); break;
+          case 'c': case 'C': strokes = []; touch(); break;
+          case 's': case 'S': screenshot(); break;
+          case 't': case 'T': {
+            const r = await engine().profile(10);
+            console.table(Object.entries(r).map(([stage, ms]) => ({ stage, ms: ms.toFixed(3) })));
+            console.log(`one quadrant: ${Object.values(r).reduce((a, b) => a + b, 0).toFixed(2)} ms (×4 for a frame)`);
+            break;
+          }
+          case 'ArrowRight': switchScene(currentScene + 1); changed(); break;
+          case 'ArrowLeft': switchScene(currentScene - 1); changed(); break;
+          case 'n': case 'N':
+            shapes.push({ x: -30, y: -30, w: 60, h: 60, b: penRadiance() });
+            selectShape(shapes.at(-1));
+            touch();
+            break;
+          case 'Delete':
+          case 'Backspace':
+            if (selected) {
+              shapes = shapes.filter((s) => s !== selected);
+              selectShape(null);
+              touch();
+            }
+            break;
+          default:
+            handled = false;
+        }
+        if (handled) {
+          e.preventDefault();
+          if (t !== document.body) t?.blur?.();
+        }
+      });
+
+      // ════════════════════════════════════════════════════════════════════
+      // Pointer: drag a shape (topmost under the pointer), or draw / erase strokes; the cursor previews the pen
+      // ════════════════════════════════════════════════════════════════════
+      const toScene = (e) => {
+        const r = squareRect();
+        return [((e.clientX - r.left) / r.width - 0.5) * SPAN, ((e.clientY - r.top) / r.height - 0.5) * SPAN];
+      };
+      const cellUnits = () => SPAN / cfg.N;
+      const shapeAt = ([u, v]) => {
+        const pad = cellUnits() / 2;
+        for (let i = shapes.length - 1; i >= 0; i--) {
+          const s = shapes[i];
+          if (u >= s.x - pad && u <= s.x + s.w + pad && v >= s.y - pad && v <= s.y + s.h + pad) return s;
+        }
+        return null;
+      };
+      let drawing = false, drag = null, last = null;
+      view.addEventListener('pointerdown', (e) => {
+        const p = toScene(e);
+        view.setPointerCapture(e.pointerId);
+        const s = shapeAt(p);
+        if (s && pen.kind !== 'eraser') {
+          selectShape(s);
+          drag = { s, dx: s.x - p[0], dy: s.y - p[1] };
+          view.className = 'grabbing';
+        } else {
+          selectShape(null);
+          drawing = true;
+          last = p;
+          paint(p, p);
+        }
+        e.preventDefault();
+      });
+      function paint(a, b) {
+        if (pen.kind === 'eraser') {
+          const r = Math.max(pen.size, 2) * cellUnits();
+          const near = (s) => {
+            const vx = s.x1 - s.x0, vy = s.y1 - s.y0, L = vx * vx + vy * vy;
+            const t = L > 0 ? Math.max(0, Math.min(1, ((b[0] - s.x0) * vx + (b[1] - s.y0) * vy) / L)) : 0;
+            return Math.hypot(s.x0 + t * vx - b[0], s.y0 + t * vy - b[1]) < r;
+          };
+          strokes = strokes.filter((s) => !near(s));
+        } else strokes.push({ x0: a[0], y0: a[1], x1: b[0], y1: b[1], size: pen.size * cellUnits(), b: penRadiance() });
+        touch();
+      }
+      view.addEventListener('pointermove', (e) => {
+        const p = toScene(e);
+        cursor = p;
+        if (silhouetteView.on) {
+          const a = snapApex([((p[0] + SPAN / 2) / SPAN) * cfg.N, cfg.N - ((p[1] + SPAN / 2) / SPAN) * cfg.N]);
+          if (!apex || a[0] !== apex[0] || a[1] !== apex[1]) ((apex = a), (overlayDirty = true), (redraw = true));
+        }
+        if (drag) Object.assign(drag.s, { x: p[0] + drag.dx, y: p[1] + drag.dy });
+        else if (drawing && Math.hypot(p[0] - last[0], p[1] - last[1]) >= cellUnits()) {
+          paint(last, p);
+          last = p;
+        } else if (!drawing) view.className = shapeAt(p) && pen.kind !== 'eraser' ? 'grab' : '';
+        if (!silhouetteView.on || drag || drawing) touch();   // with the overlay on, the cursor previews nothing
+      });
+      const end = () => {
+        drawing = false;
+        drag = null;
+        view.className = '';
+        touch();
+      };
+      view.addEventListener('pointerup', end);
+      view.addEventListener('pointercancel', end);
+      view.addEventListener('pointerleave', () => {
+        cursor = null;
+        touch();
+      });
+
+      // debugging hooks
+      // the canvas as a PNG data URL
+      const capture = () => new Promise((res) => {
+        const enc = device.createCommandEncoder(); encodeDraw(enc, engine()); device.queue.submit([enc.finish()]); res(view.toDataURL('image/png'));
+      });
+      window.polygonalHRC = { cfg, out, device, engine, touch, capture, stats: () => ({ frameMs }), scene: () => ({ shapes, strokes, E, A }) };
+
+      // ── Init ──
+      const initScene = loadURL();
+      urlReady = true;
+      syncPen();
+      refresh();
+      layout();
+      switchScene(initScene);
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>

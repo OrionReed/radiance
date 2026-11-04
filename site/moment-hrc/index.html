@@ -885,10 +885,10 @@
       const O = $('output');
       const redrawOnly = () => (redraw = true);
       segmented(O, { label: 'view', key: 'v', title: 'fluence, or the rasterised scene (emission warm, absorption grey)', options: [['fluence', 'fluence'], ['scene', 'scene']], ...field(out, 'view', redrawOnly), url: ['view', 'fluence'] });
-      segmented(O, { label: 'map', key: 'b', options: [['tone', 'tonemap'], ['banded', 'banded'], ['fc', 'false colour']], ...field(out, 'map', redrawOnly), url: ['map', 'tone'] });
+      segmented(O, { label: 'map', key: 'b', options: [['tone', 'tonemap'], ['banded', 'banded']], ...field(out, 'map', redrawOnly), url: ['map', 'tone'] });
       slider(O, {
         label: 'exposure',
-        title: 'shown: mean radiance L = fluence / 2π, times the exposure (tonemap 1 − e^−L); banded and false colour show log10(L · exposure)',
+        title: 'shown: mean radiance L = fluence / 2π, times the exposure (tonemap 1 − e^−L); banded shows log10(L · exposure)',
         min: -1,
         max: 3,
         step: 0.05, // slider in log10(exposure)
@@ -916,16 +916,9 @@
         L.innerHTML = '';
         if (out.view !== 'fluence' || out.map === 'tone') return;
         const stops = [];
-        let ticks, caption;
-        if (out.map === 'banded') {
-          for (let i = 0; i < 22; i++) stops.push(`${viridis(i / 21)} ${(i / 22) * 100}% ${((i + 1) / 22) * 100}%`);
-          ticks = ['−2.2', '−1.65', '−1.1', '−0.55', '0'];
-          caption = 'log10(L · exposure), L = fluence / 2π, 10 bands per decade; opaque black, emitters red';
-        } else {
-          for (let i = 0; i <= 16; i++) stops.push(viridis(i / 16));
-          ticks = ['10⁻⁴', '10⁻³', '10⁻²', '10⁻¹', '1+'];
-          caption = 'L · exposure, L = fluence / 2π (log scale); opaque black, emitters red';
-        }
+        for (let i = 0; i < 22; i++) stops.push(`${viridis(i / 21)} ${(i / 22) * 100}% ${((i + 1) / 22) * 100}%`);
+        const ticks = ['−2.2', '−1.65', '−1.1', '−0.55', '0'];
+        const caption = 'log10(L · exposure), L = fluence / 2π, 10 bands per decade; opaque black, emitters red';
         const b = el('div', { className: 'bar' });
         b.style.background = `linear-gradient(to right, ${stops.join(',')})`;
         L.append(b, el('div', { className: 'ticks' }, ...ticks.map((t) => el('span', { textContent: t }))), el('div', { className: 'caption', textContent: caption }));
@@ -995,7 +988,7 @@
         @group(0) @binding(1) var<storage, read> A: array<f32>;
         @group(0) @binding(2) var<storage, read> E: array<f32>;
         struct Draw {
-          P: vec4f,   // N, exposure / 2π (fluence → mean radiance), map (0 tone, 1 banded, 2 false colour), view (0 fluence, 1 scene)
+          P: vec4f,   // N, exposure / 2π (fluence → mean radiance), map (0 tone, 1 banded), view (0 fluence, 1 scene)
           Q: vec4f,   // canvas size in device pixels, dither (0 / 1), tint materials (0 / 1)
         }
         @group(0) @binding(3) var<uniform> D: Draw;
@@ -1027,11 +1020,10 @@
             if (e > 0.0) { c = vec3f(1.0, 0.75, 0.4) * min(1.0, 0.25 + select(e, S, a < 1.0)); }
             return vec4f(c, 1.0);
           }
-          if (P.z > 0.5) {   // banded / false colour
+          if (P.z > 0.5) {   // banded
             if (opaque) { return vec4f(select(vec3f(0.0), vec3f(0.85, 0.15, 0.1), e > 0.0), 1.0); }
             let lv = log(max(f, 1e-9)) / log(10.0);
-            var t = (lv + 4.0) / 4.0;
-            if (P.z < 1.5) { t = (floor(lv * 10.0) / 10.0 + 2.2) / 2.2; }
+            let t = (floor(lv * 10.0) / 10.0 + 2.2) / 2.2;
             return dither(srgb(viridis(t)), q.xy);
           }
           let tint = D.Q.w > 0.5;   // emitters red, occluders blue, by how much of each the cell holds
@@ -1076,7 +1068,7 @@
         return cascade;
       }
       function encodeDraw(enc, g) {
-        const mapId = { tone: 0, banded: 1, fc: 2 }[out.map];
+        const mapId = { tone: 0, banded: 1 }[out.map];
         device.queue.writeBuffer(drawU, 0, new Float32Array([
           g.N, out.exposure / (2 * Math.PI), mapId, out.view === 'scene' ? 1 : 0,
           view.width, view.height, out.dither ? 1 : 0, out.tint ? 1 : 0,

@@ -1,0 +1,653 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Polygonal extensions</title>
+    <meta name="description" content="Visualiser for polygonal extensions" />
+    <meta name="section" content="visualisations" />
+    <style>
+      *, *::before, *::after { box-sizing: border-box; }
+      :root {
+        --bg: #1b1a18;
+        --panel: #151413;
+        --line: rgba(240, 234, 222, 0.09);
+        --text: rgba(240, 234, 222, 0.85);
+        --dim: rgba(240, 234, 222, 0.48);
+        --ctl: rgba(240, 234, 222, 0.06);
+        --ctl-hover: rgba(240, 234, 222, 0.11);
+        --on: #e6e0d4;
+        --on-text: #1b1a18;
+        --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+      }
+      html, body { height: 100%; margin: 0; overflow: hidden; }
+      body {
+        display: grid;
+        grid-template-columns: 220px minmax(0, 1fr);
+        background: var(--bg);
+        color: var(--text);
+        font: 12px/1.35 system-ui, -apple-system, 'Segoe UI', sans-serif;
+      }
+      aside { background: var(--panel); border-right: 1px solid var(--line); padding: 14px 12px; user-select: none; overflow-y: auto; }
+      h1 { margin: 0 0 14px; font-size: 13px; font-weight: 600; }
+      .field { margin-bottom: 12px; }
+      .label { font-size: 11px; color: var(--dim); margin-bottom: 4px; display: flex; justify-content: space-between; }
+      .label .val { font-family: var(--mono); color: var(--text); }
+      .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; background: var(--ctl); border-radius: 6px; padding: 2px; }
+      .seg button { font: inherit; font-size: 11px; color: var(--dim); background: none; border: 0; border-radius: 4px; padding: 4px 2px; cursor: pointer; }
+      .seg button:hover { color: var(--text); background: var(--ctl-hover); }
+      .seg button.on { background: var(--on); color: var(--on-text); }
+      input[type='range'] { width: 100%; margin: 0; accent-color: var(--on); }
+      #readout { margin-top: 18px; font-family: var(--mono); font-size: 11px; color: var(--dim); white-space: pre; line-height: 1.6; }
+      #key { margin-top: 18px; display: grid; grid-template-columns: 16px 1fr; gap: 6px 8px; align-items: center; font-size: 11px; color: var(--dim); }
+      main { display: grid; grid-template-rows: minmax(0, 1fr) 170px; min-width: 0; }
+      main > div { position: relative; min-height: 0; }
+      main > div + div { border-top: 1px solid var(--line); }
+      main.no-strip { grid-template-rows: minmax(0, 1fr); }
+      main.no-strip > div + div { display: none; }
+      main canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+      #view { cursor: crosshair; }
+      #steps { cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <aside>
+      <h1>Polygonal extensions</h1>
+      <div class="field"><div class="label">view</div><div class="seg" id="frame"></div></div>
+      <div class="field"><div class="label" id="length-label">tile length</div><div class="seg" id="length"></div></div>
+      <div class="field" data-views="fan tile"><div class="label">extension rule</div><div class="seg" id="scheme"></div></div>
+      <div class="field" data-views="fan tile"><div class="label"><span>depth</span><span class="val" id="depth-val"></span></div><input type="range" id="depth" min="0" step="1" /></div>
+      <div class="field" data-views="fan intervals"><div class="label"><span>probe column</span><span class="val" id="probe-val"></span></div><input type="range" id="probe" min="0" step="1" /></div>
+      <div class="field" data-views="intervals"><div class="label">directions</div><div class="seg" id="directions"></div></div>
+      <div class="field"><div class="label">pixels</div><div class="seg" id="pixels"></div></div>
+      <div class="field" data-views="fan tile"><div class="label">apexes</div><div class="seg" id="apexes"></div></div>
+      <div id="key"></div>
+      <div id="readout"></div>
+    </aside>
+    <main>
+      <div><canvas id="view"></canvas></div>
+      <div><canvas id="steps"></canvas></div>
+    </main>
+
+    <script type="module">
+      // A cone tile (X, ay, d, L): the lines from the apex (X - L, ay) with slopes [d / L, (d + 1) / L], d in [-L, L), over the
+      // columns X .. X + L. Its corners are whole pixel corners. It is built from three tiles of length L / 2 and direction
+      // q = floor(d / 2): its first half and two second halves, one pixel apart, which together cover its far half.
+      // Extension rules are a family: what the pieces are (cone tiles, or lines one pixel tall), how many second halves a
+      // tile takes, how halving rounds, and whether pixels are measured or owned. Two members:
+      //   cover: the rule above. The pieces are polygons that cover the tile and overlap; no pixel belongs to a tile. Here
+      //     a pixel is shown in the tile that holds its centre. The only centres on a tile edge are those on the diagonals,
+      //     which the next quadrant shares, so each of those pixels is half in this quadrant.
+      //   partition: pieces all the way down to single pixels, so each pixel belongs to exactly one cone (as in
+      //     ResonanceCausality's twilight, src/extension.rs). A line is a strip one pixel tall from a start pixel with some
+      //     rise; it splits into its two halves. A cone whose direction is even counting away from the middle (d >= 0 even,
+      //     d < 0 odd) splits into three lines: its first half and two second halves one row apart. Any other cone splits
+      //     into two cones, its first and second half. Halving rounds toward zero. A cone of length 2 on a diagonal adds a
+      //     line one row further out at half weight: the pixels on the diagonal.
+      // A probe reads cones cascade by cascade, merged as polygonal-hrc.js does: a cone of cascade n (s = 2^n) whose apex
+      // column over s is even reads cascade n + 1 at the same apex; any other reads half a cone one step back along its
+      // edge and half one a step forward, and covers the interval between, [2s, 3s), with two tiles of length s. Which
+      // cones re-root depends on their apex columns, so on the probe's column: at column 0 none do.
+      const $ = (id) => document.getElementById(id);
+      const views = { main: $('view'), steps: $('steps') };
+
+      const state = { L: 8, scheme: 'cover', probe: 0, depth: 1, pixels: 'tiles', frame: 'fan', apexes: false, allDirections: false, direction: 3, hovered: null };
+      const LENGTHS = [2, 4, 8, 16, 32, 64];
+      const oklch = (l, c, h, a = 1) => `oklch(${l} ${c} ${h} / ${a})`;
+      const ROLES = [
+        { name: 'first half', l: 0.7, c: 0.14, hue: 262 },
+        { name: 'second half', l: 0.72, c: 0.16, hue: 38 },
+        { name: 'second half, one row up', l: 0.76, c: 0.13, hue: 158 },
+        { name: 'diagonal line, half weight', l: 0.74, c: 0.14, hue: 340 },
+      ];
+      const INK = (a) => `rgba(240, 234, 222, ${a})`;
+      const SLACK = (a) => oklch(0.8, 0.14, 82, a);
+      const SHORT = (a) => oklch(0.7, 0.17, 20, a);
+      const roleColor = (role, a = 1) => (!(role >= 0) ? INK(a) : oklch(ROLES[role].l, ROLES[role].c, ROLES[role].hue, a));
+
+      const tileKey = (t) => `${t.kind ?? 'cone'},${t.X},${t.kind === 'line' ? t.y : t.ay},${t.d},${t.L}`;
+      const slopes = (t) => [t.d / t.L, (t.d + 1) / t.L];
+      const apex = (t) => [t.X - t.L, t.ay];
+      // the tile's lower and upper edge at column x
+      const at = (t, x) => slopes(t).map((s) => t.ay + s * (x - t.X + t.L));
+      const corners = (t) => {
+        if (t.kind === 'line') return [[t.X, t.y], [t.X + t.L, t.y + t.d], [t.X + t.L, t.y + t.d + 1], [t.X, t.y + 1]];
+        const [lo0, hi0] = at(t, t.X), [lo1, hi1] = at(t, t.X + t.L);
+        return [[t.X, lo0], [t.X + t.L, lo1], [t.X + t.L, hi1], [t.X, hi0]];
+      };
+      function halves(t) {
+        if (t.L === 1) return [];
+        if (state.scheme === 'partition') return twilightHalves(t);
+        const h = t.L / 2, q = Math.floor(t.d / 2), y = t.ay + t.d;
+        return [
+          { X: t.X, ay: y - q, d: q, L: h, role: 0 },
+          { X: t.X + h, ay: y, d: q, L: h, role: 1 },
+          { X: t.X + h, ay: y + 1, d: q, L: h, role: 2 },
+        ];
+      }
+
+      function twilightHalves(t) {
+        const h = t.L / 2, c = Math.trunc(t.d / 2);
+        if (t.kind === 'line') {
+          return [
+            { kind: 'line', X: t.X, y: t.y, d: c, L: h, role: 0 },
+            { kind: 'line', X: t.X + h, y: t.y + t.d - c, d: c, L: h, role: 1 },
+          ];
+        }
+        const y = t.ay + t.d, pieces = [];
+        if (t.L === 2 && t.d === 1) pieces.push({ kind: 'line', X: t.X, y: y + 1, d: 1, L: 2, role: 3, weight: 0.5 });
+        if (t.L === 2 && t.d === -2) pieces.push({ kind: 'line', X: t.X, y: y - 1, d: -2, L: 2, role: 3, weight: 0.5 });
+        if ((t.d >= 0) === (t.d % 2 === 0)) {
+          return pieces.concat([
+            { kind: 'line', X: t.X, y, d: c, L: h, role: 0 },
+            { kind: 'line', X: t.X + h, y: y + t.d - c, d: c, L: h, role: 1 },
+            { kind: 'line', X: t.X + h, y: y + t.d - c + 1, d: c, L: h, role: 2 },
+          ]);
+        }
+        return pieces.concat([
+          { X: t.X, ay: y - c, d: c, L: h, role: 0 },
+          { X: t.X + h, ay: y + t.d - 2 * c, d: c, L: h, role: 1 },
+        ]);
+      }
+      // the partition rule's pixels: each cone of the fan of length m (apex (0, 0)) taken down to single pixels, with weights
+      const pixelCache = new Map();
+      function partitionPixels(m) {
+        if (!pixelCache.has(m)) {
+          const byCone = new Map();
+          for (const t of fan(m)) {
+            const weights = new Map(), descend = (p, w) => {
+              if (p.L > 1) { for (const c of twilightHalves(p)) descend(c, w * (c.weight ?? 1)); return; }
+              const key = p.kind === 'line' ? `${p.X},${p.y}` : `${p.X},${p.ay + p.d}`;
+              weights.set(key, (weights.get(key) ?? 0) + w);
+            };
+            descend(t, 1);
+            byCone.set(t.d, [...weights].map(([key, w]) => [...key.split(',').map(Number), w]));
+          }
+          pixelCache.set(m, byCone);
+        }
+        return pixelCache.get(m);
+      }
+      // the tiles at a given depth below t, each with how many times the extension uses it
+      function tilesAtDepth(t, depth) {
+        let level = new Map([[tileKey(t), { ...t, role: -1, uses: 1 }]]);
+        for (let k = 0; k < depth; k++) {
+          const next = new Map();
+          for (const parent of level.values()) for (const child of halves(parent)) {
+            const key = tileKey(child), seen = next.get(key);
+            const uses = parent.uses * (child.weight ?? 1);
+            if (seen) seen.uses += uses; else next.set(key, { ...child, uses });
+          }
+          level = next;
+        }
+        return [...level.values()];
+      }
+      // the fan: every direction of the apex (0, 0) at length L
+      const fan = (L) => Array.from({ length: 2 * L }, (_, i) => ({ X: L, ay: 0, d: i - L, L }));
+
+      // the cones the probe reads in one direction of length L, cascade by cascade, as polygonal-hrc.js merges them. Each
+      // cone has the weight its value is read with (weight) and the weight its own tile's light is read with (lit): a cone
+      // that a re-rooted merge reaches one step back gates with its own tile, but the light there comes from the interval
+      // between instead. Cascade 0 also reads the pixel next to the probe. chain(n) is the direction followed at cascade n;
+      // the tree stops at cascade top: what those cones' own merges read is not shown.
+      function probeTreeChain(chain, top) {
+        const levels = [];
+        let cones = new Map([[`${state.probe},0`, { apex: [state.probe, 0], weight: 1, lit: 1 }]]);
+        for (let n = 0; n <= top; n++) {
+          const s = 2 ** n, d = chain(n), level = [], next = new Map();
+          const add = (apex, weight, lit) => {
+            const c = next.get(`${apex}`);
+            if (c) { c.weight += weight; c.lit += lit; } else next.set(`${apex}`, { apex, weight, lit });
+          };
+          for (const { apex: [x, y], weight, lit } of cones.values()) {
+            const reRooted = ((x >> n) & 1) === 1;
+            const tiles = [{ X: x + s, ay: y, d, L: s, cascade: n, weight, lit }];
+            if (reRooted && n < top) for (const k of [0, 1]) tiles.push({ X: x + 2 * s, ay: y + d + k, d, L: s, cascade: n, weight, lit: weight, between: true });
+            level.push({ n, apex: [x, y], d, weight, lit, reRooted, tiles });
+            if (n === top) continue;
+            const half = chain(n + 1) - 2 * d;
+            if (!reRooted) add([x, y], weight, weight);
+            else { add([x - s, y - d - half], weight / 2, 0); add([x + s, y + d + half], weight / 2, weight / 2); }
+          }
+          levels.push(level);
+          cones = next;
+        }
+        return levels;
+      }
+      // the tree for a direction of length L
+      const probeTree = (direction) => { const N = Math.log2(state.L); return probeTreeChain((n) => direction >> (N - n), N); };
+      // every cone the probe reads in its first `count` intervals, over all directions, by cascade
+      function probeIntervals(count) {
+        const top = count - 1, tiles = Array.from({ length: count }, () => new Map()), cones = Array.from({ length: count }, () => new Map());
+        for (let D = -(2 ** top); D < 2 ** top; D++) {
+          probeTreeChain((n) => D >> (top - n), top).forEach((level, n) => {
+            for (const c of level) {
+              cones[n].set(`${c.apex},${c.d}`, c);
+              for (const t of c.tiles) tiles[n].set(`${tileKey(t)},${t.between ? 'between' : 'own'}`, t);
+            }
+          });
+        }
+        return { tiles: tiles.map((m) => [...m.values()]), cones: cones.map((m) => [...m.values()]) };
+      }
+      // the selected direction, followed through the probe's first `count` intervals
+      const selectedChain = (n) => Math.floor((state.direction * 2 ** n) / state.L);
+      // the probe's cones of length L in every direction; with the probe at column 0, the fan of the apex (0, 0)
+      function probeFan() {
+        const N = Math.log2(state.L), tiles = new Map();
+        for (let d = -state.L; d < state.L; d++) for (const c of probeTree(d)[N]) tiles.set(tileKey(c.tiles[0]), c.tiles[0]);
+        return [...tiles.values()];
+      }
+      const CASCADE_HUES = [262, 38, 158, 340, 200, 95, 300];
+      const cascadeColor = (n, a = 1) => oklch(0.74, 0.14, CASCADE_HUES[n % CASCADE_HUES.length], a);
+
+      // point inside the tile (convex, corners counter-clockwise)
+      function contains(t, x, y) {
+        const c = corners(t);
+        for (let i = 0; i < 4; i++) {
+          const [ax, ay] = c[i], [bx, by] = c[(i + 1) % 4];
+          if ((bx - ax) * (y - ay) - (by - ay) * (x - ax) < 0) return false;
+        }
+        return true;
+      }
+      // the stretches of the tile's lower and upper edges where the pieces stop exactly at the edge (match), reach past it
+      // (past), or stop short of it (short), from 64 points per edge
+      function edgeRuns(root, parts) {
+        const N = 64, eps = 1e-3, c = corners(root);
+        return [[0, 1, -1], [3, 2, 1]].flatMap(([a, b, side]) => {
+          const [ax, ay] = c[a], [bx, by] = c[b], at = (t) => [ax + (bx - ax) * t, ay + (by - ay) * t];
+          const runs = [];
+          for (let i = 0; i < N; i++) {
+            const [x, y] = at((i + 0.5) / N);
+            const kind = parts.some((p) => contains(p, x, y + side * eps)) ? 'past' : parts.some((p) => contains(p, x, y - side * eps)) ? 'match' : 'short';
+            const last = runs.at(-1);
+            if (last && last.kind === kind) last.t1 = (i + 1) / N;
+            else runs.push({ kind, t0: i / N, t1: (i + 1) / N });
+          }
+          return runs.map((r) => ({ kind: r.kind, from: at(r.t0), to: at(r.t1) }));
+        });
+      }
+
+      // ── drawing: world units are grid pixels, y up. Each canvas draws through its own view ──
+      let ctx, view, dpr = 1;
+      const sx = (x) => view.ox + x * view.scale, sy = (y) => view.oy - y * view.scale;
+      const toWorld = (px, py) => [(px - view.ox) / view.scale, (view.oy - py) / view.scale];
+      function fit([x0, x1, y0, y1], box, pad) {
+        const scale = Math.min((box.w - 2 * pad) / (x1 - x0), (box.h - 2 * pad) / (y1 - y0));
+        return { scale, ox: box.x + box.w / 2 - ((x0 + x1) / 2) * scale, oy: box.y + box.h / 2 + ((y0 + y1) / 2) * scale };
+      }
+      function bounds(tiles, points = []) {
+        let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        for (const [x, y] of tiles.flatMap(corners).concat(points)) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+        return [x0 - 1, x1 + 1, Math.floor(y0) - 1, Math.ceil(y1) + 1];
+      }
+
+      function drawDots(box) {
+        const [x0, y1] = toWorld(box.x, box.y), [x1, y0] = toWorld(box.x + box.w, box.y + box.h);
+        if ((x1 - x0) * (y1 - y0) > 40000) return;
+        ctx.fillStyle = INK(0.16);
+        const r = Math.max(1, view.scale * 0.05);
+        for (let x = Math.ceil(x0); x <= x1; x++) for (let y = Math.ceil(y0); y <= y1; y++) ctx.fillRect(sx(x) - r / 2, sy(y) - r / 2, r, r);
+      }
+      function cell(x, y, color) {
+        const inset = Math.max(0.5, view.scale * 0.07);
+        ctx.fillStyle = color;
+        ctx.fillRect(sx(x) + inset, sy(y + 1) + inset, view.scale - 2 * inset, view.scale - 2 * inset);
+      }
+      function ring(x, y, color) {
+        const inset = Math.max(0.5, view.scale * 0.07), width = Math.max(1.5, view.scale * 0.1);
+        ctx.strokeStyle = color; ctx.lineWidth = width;
+        ctx.strokeRect(sx(x) + inset + width / 2, sy(y + 1) + inset + width / 2, view.scale - 2 * inset - width, view.scale - 2 * inset - width);
+      }
+      function path(points) {
+        ctx.beginPath();
+        points.forEach(([x, y], i) => ctx[i ? 'lineTo' : 'moveTo'](sx(x), sy(y)));
+      }
+      function polygon(t, stroke, fill, width = 1, dash = []) {
+        path(corners(t)); ctx.closePath();
+        if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+        if (stroke) { ctx.setLineDash(dash.map((v) => v * dpr)); ctx.strokeStyle = stroke; ctx.lineWidth = width * dpr; ctx.stroke(); ctx.setLineDash([]); }
+      }
+      function line(a, b, stroke, width, dash = []) {
+        ctx.setLineDash(dash.map((v) => v * dpr));
+        path([a, b]); ctx.strokeStyle = stroke; ctx.lineWidth = width * dpr; ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      function dot([x, y], color, radius) {
+        ctx.fillStyle = color;
+        ctx.beginPath(); ctx.arc(sx(x), sy(y), radius * dpr, 0, 2 * Math.PI); ctx.fill();
+      }
+
+      // a pixel's half on the inner side of a diagonal through two of its corners
+      function halfCell(x, y, color, upper) {
+        const points = upper ? [[x, y + 1], [x + 1, y + 1], [x + 1, y]] : [[x, y], [x + 1, y], [x + 1, y + 1]];
+        const centre = [x + 2 / 3, upper ? y + 2 / 3 : y + 1 / 3], shrink = 1 - Math.max(0.5, view.scale * 0.07) * 3 / view.scale;
+        path(points.map(([px, py]) => [centre[0] + (px - centre[0]) * shrink, centre[1] + (py - centre[1]) * shrink]));
+        ctx.closePath(); ctx.fillStyle = color; ctx.fill();
+      }
+      // the pixels of cones from a pixel-corner apex: by centre for the cover rule, by its own pieces for the partition rule.
+      // Hue from direction, the selected direction strongest, faded by the weight its light is read with
+      function drawTilePixels(tiles) {
+        for (const t of tiles) {
+          const lit = t.lit ?? 1;
+          if (!lit) continue;
+          const [ax, ay] = apex(t), m = t.L, hue = 300 - 120 * ((t.d + 0.5) / m + 1);
+          const color = t.d === state.direction ? oklch(0.68, 0.13, hue, lit) : oklch(t.d % 2 ? 0.33 : 0.38, 0.05, hue, lit);
+          const paint = (x, y, w) => (w === 1 ? cell(ax + x, ay + y, color) : halfCell(ax + x, ay + y, color, y < 0));
+          if (state.scheme === 'partition') {
+            for (const [x, y, w] of partitionPixels(m).get(t.d)) paint(x, y, w);
+            continue;
+          }
+          // a pixel's cone follows from the slope to its centre; centres on the diagonals are half in this quadrant
+          for (let x = m; x < 2 * m; x++) {
+            for (let y = Math.max(-x - 1, Math.floor((t.d * (x + 0.5)) / m) - 1); y <= Math.min(x, Math.ceil(((t.d + 1) * (x + 0.5)) / m)); y++) {
+              const diagonal = y === x || y === -x - 1;
+              const d = y === x ? m - 1 : y === -x - 1 ? -m : Math.floor(((y + 0.5) / (x + 0.5)) * m);
+              if (d === t.d) paint(x, y, diagonal ? 0.5 : 1);
+            }
+          }
+        }
+      }
+      // how much of each pixel the selected tile covers (filled) and how much only its pieces at this depth cover (ochre, as
+      // a ring when the pixel is also in the tile), from 8 x 8 samples
+      function drawCoverage(root, parts) {
+        const S = 8;   // samples per pixel side
+        const [, , y0, y1] = bounds(parts.concat(root));
+        for (let x = root.X; x < root.X + root.L; x++) for (let y = y0; y < y1; y++) {
+          let inRoot = 0, onlyParts = 0, onlyRoot = 0;
+          for (let i = 0; i < S; i++) for (let j = 0; j < S; j++) {
+            const px = x + (i + 0.5) / S, py = y + (j + 0.5) / S, inParts = parts.some((t) => contains(t, px, py));
+            if (contains(root, px, py)) { inRoot++; if (!inParts) onlyRoot++; } else if (inParts) onlyParts++;
+          }
+          if (inRoot) cell(x, y, INK(0.08 + 0.62 * inRoot / (S * S)));
+          if (onlyParts) (inRoot ? ring : cell)(x, y, SLACK(0.3 + 0.7 * onlyParts / (S * S)));
+          if (onlyRoot) { const r = Math.sqrt(onlyRoot / (S * S)) * 0.5; ctx.fillStyle = SHORT(0.9); ctx.fillRect(sx(x + 0.5 - r), sy(y + 0.5 + r), 2 * r * view.scale, 2 * r * view.scale); }
+        }
+      }
+      function drawParts(parts, width = 1.5) {
+        for (const t of parts) polygon(t, roleColor(t.role, 0.95), roleColor(t.role, 0.1), width);
+      }
+      function drawApexes(tiles) {
+        for (const t of tiles.filter((t) => t.kind !== 'line')) {
+          const color = roleColor(t.role, 0.75), a = apex(t);
+          const c = corners(t);
+          line(a, c[0], color, 1, [3, 3]);
+          line(a, c[3], color, 1, [3, 3]);
+          dot(a, roleColor(t.role), 3.5);
+        }
+      }
+      function drawEdges(root, parts, width = 2.5) {
+        for (const r of edgeRuns(root, parts)) {
+          if (r.kind === 'match') line(r.from, r.to, INK(0.95), width);
+          else if (r.kind === 'past') line(r.from, r.to, INK(0.95), width * 0.6, [5, 4]);
+          else line(r.from, r.to, SHORT(0.95), width * 0.6, [1.5, 3]);
+        }
+      }
+
+      function prepare(canvas) {
+        const r = canvas.getBoundingClientRect();
+        dpr = window.devicePixelRatio || 1;
+        const w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+        ctx = canvas.getContext('2d');
+        ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--bg');
+        ctx.fillRect(0, 0, w, h);
+        return { x: 0, y: 0, w, h };
+      }
+
+      function current() {
+        const tiles = fan(state.L), root = tiles[state.direction + state.L];
+        return { tiles, root, parts: tilesAtDepth(root, state.depth) };
+      }
+      const pixelMode = () => (state.pixels === 'coverage' && state.frame !== 'tile' ? 'tiles' : state.pixels);
+
+      // The frame fits what is drawn. It refits when the view, length, rule or direction change; while the probe or the
+      // depth is scrubbed it only grows, when something would fall outside it, so nothing jumps back and forth.
+      let frame = null, frameKey = '';
+      function fitFrame(content) {
+        const key = `${state.frame},${state.L},${state.scheme},${state.direction},${state.allDirections}`;
+        if (key !== frameKey || !frame) { frame = content; frameKey = key; }
+        else frame = [Math.min(frame[0], content[0]), Math.max(frame[1], content[1]), Math.min(frame[2], content[2]), Math.max(frame[3], content[3])];
+        return frame;
+      }
+
+      let mainView;
+      // the probe's intervals: the boundaries between them, the probe's own cone edges, and the cones it reads (in one
+      // direction, or all), filled by the weight their light is read with
+      function drawProbe(box) {
+        const N = Math.log2(state.L), x0 = state.probe;
+        const { tiles, cones } = probeIntervals(N + 1), chosen = probeTreeChain(selectedChain, N);
+        const shown = (state.allDirections ? tiles : chosen.map((level) => level.flatMap((c) => c.tiles))).map((level) => level.filter((t) => t.lit));
+        view = mainView = fit(fitFrame(bounds(shown.flat(), chosen.flat().map((c) => c.apex).concat([[x0, 0]]))), box, 24 * dpr);
+        drawDots(box);
+        // where the pieces it reads begin and end: stored cones sit on a lattice (a cascade-n piece spans columns that are
+        // multiples of 2^n), so relative to the probe these columns move with it
+        const joins = new Map([[x0, [-1, 1]]]);
+        for (const t of shown.flat()) for (const x of [t.X, t.X + t.L]) {
+          const [lo, hi] = at(t, x), j = joins.get(x) ?? [Infinity, -Infinity];
+          joins.set(x, [Math.min(j[0], lo), Math.max(j[1], hi)]);
+        }
+        for (const [x, [lo, hi]] of joins) line([x, lo - 1.5], [x, hi + 1.5], INK(0.22), 2.5);
+        for (let n = 0; n <= N; n++) {
+          const s = 2 ** n, d = selectedChain(n);
+          for (let k = -s; k <= s; k++) if (state.allDirections || k === d || k === d + 1) line([x0 + s, k], [x0 + 2 * s, 2 * k], INK(0.25), 1);
+        }
+        if (pixelMode() === 'tiles') {
+          for (const t of shown.flat()) {
+            const [, , y0, y1] = bounds([t]);
+            for (let x = t.X; x < t.X + t.L; x++) for (let y = y0; y < y1; y++) if (contains(t, x + 0.5, y + 0.5)) cell(x, y, cascadeColor(t.cascade, 0.1 + 0.35 * t.lit));
+          }
+        }
+        cell(x0, selectedChain(0), INK(0.3));
+        shown.forEach((level) => { for (const t of level) polygon(t, cascadeColor(t.cascade, 0.9), cascadeColor(t.cascade, 0.04 + 0.16 * t.lit), 1.3, t.between ? [5, 3] : []); });
+        if (state.allDirections) for (const t of chosen.flat().flatMap((c) => c.tiles)) if (t.lit) polygon(t, INK(0.95), null, 2, t.between ? [5, 3] : []);
+        for (const c of chosen.flat()) dot(c.apex, cascadeColor(c.n), 1.5 + 3 * c.weight);
+        if (state.hovered) polygon(state.hovered, INK(0.95), INK(0.1), 2);
+        dot([x0, 0], INK(0.95), 4.5);
+        const counted = state.allDirections ? cones : chosen;
+        const lines = [`probe    column ${x0}, binary ${x0.toString(2)}`, `${state.allDirections ? 'all directions' : `direction ${state.direction} of length ${state.L}`}`];
+        const offsets = [...joins.keys()].map((x) => x - x0).filter((r) => r > 0).sort((a, b) => a - b);
+        for (let i = 0; i < offsets.length; i += 8) lines.push(`${i ? '' : 'joins at'.padEnd(9)}`.padEnd(9) + offsets.slice(i, i + 8).map((r) => `+${r}`).join(' '));
+        lines.push('', 'cascade  cones  re-rooted');
+        counted.forEach((level, n) => lines.push(`${String(n).padEnd(9)}${String(level.length).padEnd(7)}${level.filter((c) => c.reRooted).length}`));
+        const h = state.hovered;
+        if (h) lines.push('', `hovered  cascade ${h.cascade}, apex ${h.X - h.L}, ${h.ay}`, h.between ? `         between, light ${h.lit}` : `         value ${h.weight}, light ${h.lit}`);
+        $('readout').textContent = lines.join('\n');
+      }
+      function drawMain() {
+        const box = prepare(views.main);
+        if (state.frame === 'intervals') { drawProbe(box); return; }
+        const L = state.L, fanView = state.frame === 'fan';
+        const read = fanView ? probeFan() : fan(L), tiles = read.filter((t) => t.lit ?? 1);
+        const roots = fanView ? tiles.filter((t) => t.d === state.direction) : [tiles[state.direction + L]];
+        const partsOf = roots.map((root) => tilesAtDepth(root, state.depth)), parts = partsOf.flat();
+        const apexTiles = state.apexes ? roots.concat(parts).filter((t) => t.kind !== 'line') : [];
+        const apexes = [...new Map(tiles.map((t) => [`${apex(t)}`, apex(t)])).values()];
+        const content = fanView ? bounds(tiles.concat(parts), [[state.probe, 0]])
+          : bounds(Array.from({ length: Math.log2(L) + 1 }, (_, k) => tilesAtDepth(roots[0], k)).flat());
+        view = mainView = fit(fitFrame(content), box, 24 * dpr);
+        drawDots(box);
+        if (fanView && apexes.length === 1) for (const [ax, ay] of apexes) for (const s of [1, -1]) line([ax, ay], [ax + 2 * L + 1, ay + s * (2 * L + 1)], INK(0.3), 1, [4, 4]);
+
+        if (pixelMode() === 'tiles') drawTilePixels(tiles);
+        else if (pixelMode() === 'coverage') roots.forEach((root, i) => drawCoverage(root, partsOf[i]));
+
+        for (const t of tiles) polygon(t, INK(0.14), null);
+        if (state.depth) drawParts(parts);
+        if (state.apexes) drawApexes(apexTiles);
+        roots.forEach((root, i) => (state.depth ? drawEdges(root, partsOf[i]) : polygon(root, INK(0.95), null, 2)));
+        if (state.hovered && !roots.some((r) => tileKey(r) === tileKey(state.hovered))) polygon(state.hovered, INK(0.95), INK(0.1), 2);
+        if (fanView) for (const a of apexes) dot(a, INK(0.6), 2.5);
+        if (fanView) dot([state.probe, 0], INK(0.9), Math.max(3, Math.min(view.scale * 0.12 / dpr, 6)));
+        readout(fanView ? read.filter((t) => t.d === state.direction) : roots, parts);
+      }
+
+      // one panel per depth, all in the same frame: each level's tiles, coloured by which part of its parent each one is
+      let stepPanels = [];
+      function drawSteps() {
+        const box = prepare(views.steps), { root } = current(), K = Math.log2(state.L);
+        const levels = Array.from({ length: K + 1 }, (_, k) => tilesAtDepth(root, k));
+        const frameBounds = bounds(levels.flat());
+        const w = box.w / (K + 1), caption = 30 * dpr;
+        ctx.font = `${11 * dpr}px ${getComputedStyle(document.body).getPropertyValue('--mono')}`;
+        ctx.textAlign = 'center';
+        stepPanels = levels.map((parts, k) => {
+          const panel = { x: box.x + k * w, y: box.y, w, h: box.h - caption };
+          view = fit(frameBounds, panel, 10 * dpr);
+          if (k === state.depth) { ctx.fillStyle = INK(0.06); ctx.fillRect(panel.x, 0, w, box.h); }
+          if (k) { drawParts(parts, 1); drawEdges(root, parts, 1.5); }
+          else polygon(root, INK(0.95), INK(0.08), 1.5);
+          ctx.fillStyle = k === state.depth ? INK(0.95) : INK(0.55);
+          ctx.fillText(`length ${parts[0].L}`, panel.x + w / 2, box.h - caption + 12 * dpr);
+          const lines = parts.filter((t) => t.kind === 'line').length, cones = parts.length - lines;
+          const count = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+          ctx.fillText([cones && count(cones, state.scheme === 'partition' ? 'cone' : 'tile'), lines && count(lines, 'line')].filter(Boolean).join(', '), panel.x + w / 2, box.h - caption + 25 * dpr);
+          if (k) { ctx.fillStyle = INK(0.1); ctx.fillRect(panel.x, 8 * dpr, dpr, box.h - 16 * dpr); }
+          return panel;
+        });
+      }
+
+      function draw() { drawMain(); if (state.frame !== 'intervals') drawSteps(); }
+
+      function readout(roots, parts) {
+        const uses = parts.reduce((n, t) => n + t.uses, 0), root = roots[0];
+        // roots: every cone of this direction the probe reads; those with light 0 only gate (their light comes through the
+        // interval between of an earlier cascade) and are not drawn
+        const lines = [`tile     d ${root.d}, length ${root.L}`];
+        if (state.frame === 'fan' && (roots.length > 1 || state.probe !== 0)) {
+          lines.push(`probe ${state.probe} reads it from`, 'apex     value  light');
+          for (const r of roots) lines.push(`${`${r.X - r.L}, ${r.ay}`.padEnd(9)}${String(r.weight).padEnd(7)}${r.lit}`);
+        }
+        lines.push(`depth ${state.depth}  ${parts.length} pieces, ${uses} uses`);
+        const h = state.hovered;
+        if (h?.kind === 'line') lines.push('', `hovered  line from ${h.X}, ${h.y}  rise ${h.d}`, `         length ${h.L}${h.uses !== 1 ? `, used ${h.uses} times` : ''}`);
+        else if (h) lines.push('', `hovered  apex ${h.X - h.L}, ${h.ay}  d ${h.d}`, `         length ${h.L}${h.uses !== undefined && h.uses !== 1 ? `, used ${h.uses} times` : ''}`, ...(h.weight !== undefined && state.probe !== 0 ? [`         value ${h.weight}, light ${h.lit}`] : []));
+        $('readout').textContent = lines.join('\n');
+      }
+
+      // ── controls: each view shows only the controls that act in it ──
+      function segmented(id, options, key, after) {
+        const root = $(id);
+        root.replaceChildren(...options.map(([value, text]) => {
+          const b = document.createElement('button');
+          b.textContent = text;
+          b.addEventListener('click', () => { state[key] = value; state.hovered = null; after?.(); sync(); draw(); });
+          return b;
+        }));
+        root.sync = () => [...root.children].forEach((b, i) => b.classList.toggle('on', options[i][0] === (key === 'pixels' ? pixelMode() : state[key])));
+      }
+      segmented('frame', [['fan', 'fan'], ['intervals', 'intervals'], ['tile', 'tile']], 'frame');
+      segmented('length', LENGTHS.map((n) => [n, String(n)]), 'L', () => {
+        state.direction = Math.min(Math.max(state.direction, -state.L), state.L - 1);
+        state.depth = Math.min(state.depth, Math.log2(state.L));
+        state.probe = Math.min(state.probe, state.L);
+      });
+      segmented('scheme', [['cover', 'cover'], ['partition', 'partition']], 'scheme');
+      segmented('directions', [[false, 'selected'], [true, 'all']], 'allDirections');
+      segmented('pixels', [['tiles', 'tiles'], ['coverage', 'coverage'], ['off', 'off']], 'pixels');
+      segmented('apexes', [[false, 'off'], [true, 'on']], 'apexes');
+      $('depth').addEventListener('input', (e) => { state.depth = Number(e.target.value); sync(); draw(); });
+      $('probe').addEventListener('input', (e) => { state.probe = Number(e.target.value); state.hovered = null; sync(); draw(); });
+
+      function swatch(paint) {
+        const c = document.createElement('canvas'), s = window.devicePixelRatio || 1;
+        c.width = 16 * s; c.height = 12 * s; c.style.width = '16px'; c.style.height = '12px';
+        const g = c.getContext('2d'); g.scale(s, s); paint(g);
+        return c;
+      }
+      const stroke = (g, color, width, dash = []) => { g.strokeStyle = color; g.lineWidth = width; g.setLineDash(dash); g.beginPath(); g.moveTo(0, 6); g.lineTo(16, 6); g.stroke(); };
+      const box = (color) => (g) => { g.fillStyle = color(0.3); g.fillRect(1, 1, 14, 10); g.strokeStyle = color(1); g.lineWidth = 1.5; g.strokeRect(1, 1, 14, 10); };
+      const disc = (g) => { g.fillStyle = INK(0.9); g.beginPath(); g.arc(8, 6, 3.5, 0, 2 * Math.PI); g.fill(); };
+      function renderKey() {
+        const items = [];
+        if (state.frame === 'intervals') {
+          items.push([(g) => { g.fillStyle = INK(0.3); g.fillRect(7, 0, 2.5, 12); }, 'where the pieces it reads begin and end']);
+          items.push([(g) => stroke(g, INK(0.45), 1), "the probe's own cone edges"]);
+          for (let n = 0; n <= Math.log2(state.L); n++) items.push([box((a) => cascadeColor(n, a)), `cascade ${n}, length ${2 ** n}`]);
+          items.push([(g) => stroke(g, cascadeColor(1), 1.5, [4, 3]), 'interval between, two tiles']);
+          if (state.allDirections) items.push([(g) => stroke(g, INK(0.95), 2), 'the selected direction']);
+          items.push([(g) => { g.strokeStyle = INK(0.6); g.lineWidth = 1.5; g.strokeRect(3, 1, 10, 10); }, 'pixel next to the probe']);
+          items.push([disc, 'apex, sized by weight']);
+        } else {
+          if (state.depth) ROLES.forEach((r, i) => (i < 3 || state.scheme === 'partition') && items.push([box((a) => roleColor(i, a)), r.name]));
+          if (pixelMode() === 'tiles') items.push([(g) => { g.fillStyle = INK(0.5); g.beginPath(); g.moveTo(2, 12); g.lineTo(14, 12); g.lineTo(14, 0); g.fill(); }, 'pixel shared with the next quadrant']);
+          if (pixelMode() === 'coverage') {
+            items.push([(g) => { g.fillStyle = INK(0.7); g.fillRect(2, 0, 12, 12); }, 'covered by the tile']);
+            items.push([(g) => { g.fillStyle = SLACK(1); g.fillRect(2, 0, 12, 12); }, 'covered only by the pieces']);
+            if (state.scheme === 'partition') items.push([(g) => { g.fillStyle = SHORT(1); g.fillRect(5, 3, 6, 6); }, 'in the tile but in no piece']);
+          }
+          if (state.depth) {
+            items.push([(g) => stroke(g, INK(0.95), 2.5), 'edge the pieces match']);
+            items.push([(g) => stroke(g, INK(0.95), 1.5, [4, 3]), 'edge the pieces reach past']);
+            if (state.scheme === 'partition') items.push([(g) => stroke(g, SHORT(0.95), 1.5, [1.5, 3]), 'edge the pieces stop short of']);
+          }
+          if (state.apexes) items.push([disc, 'apex']);
+        }
+        $('key').replaceChildren(...items.flatMap(([paint, text]) => { const s = document.createElement('span'); s.textContent = text; return [swatch(paint), s]; }));
+      }
+      function sync() {
+        for (const id of ['frame', 'length', 'scheme', 'directions', 'pixels', 'apexes']) $(id).sync();
+        for (const field of document.querySelectorAll('[data-views]')) field.style.display = field.dataset.views.split(' ').includes(state.frame) ? '' : 'none';
+        $('pixels').children[1].style.display = state.frame === 'tile' ? '' : 'none';
+        $('length-label').textContent = state.frame === 'intervals' ? 'longest interval' : 'tile length';
+        document.querySelector('main').classList.toggle('no-strip', state.frame === 'intervals');
+        const depth = $('depth'); depth.max = Math.log2(state.L); depth.value = state.depth;
+        $('depth-val').textContent = state.depth;
+        const probe = $('probe'); probe.max = state.L; probe.value = state.probe;
+        $('probe-val').textContent = state.probe;
+        renderKey();
+      }
+
+      // hover a piece of the extension or a cone; click a cone to select its direction (in the intervals view, a column to
+      // move the probe there)
+      function tileAt(e) {
+        const r = views.main.getBoundingClientRect();
+        view = mainView;
+        const [x, y] = toWorld((e.clientX - r.left) * dpr, (e.clientY - r.top) * dpr);
+        if (state.frame === 'intervals') {
+          const N = Math.log2(state.L), shown = state.allDirections ? probeIntervals(N + 1).tiles.flat() : probeTreeChain(selectedChain, N).flat().flatMap((c) => c.tiles);
+          return { x, part: shown.filter((t) => t.lit && contains(t, x, y)).at(-1) };
+        }
+        const tiles = state.frame === 'fan' ? probeFan().filter((t) => t.lit) : fan(state.L);
+        const roots = tiles.filter((t) => t.d === state.direction && (state.frame === 'fan' || t.ay === 0));
+        const part = state.depth ? roots.flatMap((r) => tilesAtDepth(r, state.depth)).filter((t) => contains(t, x, y)).at(-1) : null;
+        return { x, part, fanTile: tiles.find((t) => contains(t, x, y)) };
+      }
+      views.main.addEventListener('pointermove', (e) => {
+        const { part, fanTile } = tileAt(e);
+        const next = part ?? fanTile ?? null;
+        if (tileKey(next ?? {}) !== tileKey(state.hovered ?? {})) { state.hovered = next; drawMain(); }
+      });
+      views.main.addEventListener('pointerleave', () => { state.hovered = null; drawMain(); });
+      views.main.addEventListener('click', (e) => {
+        const { x, fanTile } = tileAt(e);
+        if (state.frame === 'intervals') {
+          state.probe = Math.max(0, Math.min(Math.floor(x), state.L)); state.hovered = null;
+          sync(); draw(); return;
+        }
+        if (!fanTile) return;
+        state.direction = fanTile.d;
+        sync(); draw();
+      });
+      views.steps.addEventListener('click', (e) => {
+        const r = views.steps.getBoundingClientRect(), x = (e.clientX - r.left) * dpr;
+        const k = stepPanels.findIndex((p) => x >= p.x && x < p.x + p.w);
+        if (k >= 0) { state.depth = k; sync(); draw(); }
+      });
+      // up / down: direction; left / right: depth, or in the intervals view the probe column
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowUp') state.direction = Math.min(state.direction + 1, state.L - 1);
+        else if (e.key === 'ArrowDown') state.direction = Math.max(state.direction - 1, -state.L);
+        else if (state.frame === 'intervals' && e.key === 'ArrowRight') state.probe = Math.min(state.probe + 1, state.L);
+        else if (state.frame === 'intervals' && e.key === 'ArrowLeft') state.probe = Math.max(state.probe - 1, 0);
+        else if (e.key === 'ArrowRight') state.depth = Math.min(state.depth + 1, Math.log2(state.L));
+        else if (e.key === 'ArrowLeft') state.depth = Math.max(state.depth - 1, 0);
+        else return;
+        state.hovered = null;
+        e.preventDefault(); sync(); draw();
+      });
+
+      const observer = new ResizeObserver(draw);
+      observer.observe(views.main); observer.observe(views.steps);
+      sync(); draw();
+    </script>
+  </body>
+</html>

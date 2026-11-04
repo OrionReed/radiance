@@ -495,7 +495,7 @@
       // ════════════════════════════════════════════════════════════════════
       // State. cfg rebuilds the cascade when it changes; out only redraws.
       // ════════════════════════════════════════════════════════════════════
-      const cfg = { N: 512, fam: 'lbal', f16: false };
+      const cfg = { N: 512, fam: 'lbal', f16: false, stochastic: false, onepass: false, opaqueKernel: false };
       const out = { view: 'fluence', map: 'tone', exposure: 2, dither: true, tint: false };
       let dirty = true, redraw = true;
       const touch = () => (dirty = true);
@@ -577,7 +577,7 @@
       // Materials, in the square-pixel (px-box) model. Mono: a colour's luminance S is the material's radiance (its source
       // function). Opacity is per reference cell (N = 256), so a scene looks the same at every N: extinction per cell
       // σ = −ln(1 − opacity) · 256/N, A = e^−σ, emission density E = S σ, so a thick block glows with radiance S.
-      // An opaque emitter is the σ → ∞ limit of that, which a cell cannot hold: it is capped at σ = 8 per reference cell.
+      // Opacity 1 is exactly opaque (A = 0): a wall, or a solid light whose cell emits radiance S from its own surface.
       // Opacity 0 is a volumetric light: E = S per reference cell length.
       // ════════════════════════════════════════════════════════════════════
       const presets = [
@@ -597,6 +597,7 @@
       const material = (rgb, opacity, N) => {
         const S = lum(rgb);
         if (opacity <= 0) return { e: (S * REF) / N, a: 1 };
+        if (opacity >= 1) return { e: S, a: 0 }; // an opaque cell (wall, or solid light of radiance S emitting from its own surface)
         const sigRef = opacity >= 1 ? (S > 0 ? SIG_CAP : Infinity) : Math.min(-Math.log(1 - opacity), S > 0 ? SIG_CAP : Infinity);
         const sig = (sigRef * REF) / N, a = Math.exp(-sig);
         return { e: S > 0 ? S * sig : 0, a };
@@ -861,6 +862,26 @@
         ...field(cfg, 'fam'),
         url: ['fam', 'lbal'],
       });
+      toggle(F, {
+        label: 'stochastic transmittance',
+        title: 'a record\'s transmittance is the average over both roundings of its odd split (the expectation of a stochastically rounded path), each path also blocked by the corner cell its chord crosses where it steps a row; light stays on the line\'s own path. About half the penumbra error against square-pixel truth (Python tests), no extra memory (Python: brays_lean2 TBLEND=1 FAT=1)',
+        ...field(cfg, 'stochastic'),
+        enabled: () => !cfg.onepass,
+        url: ['stochastic', false],
+      });
+      toggle(F, {
+        label: 'one-pass stochastic',
+        title: 'every odd split rounds either way with ½, independently per record, so records hold expectations (μ0, μ1, μ2, T); where a path steps a row it passes one of the two corner cells (its target\'s own column with probability 1 / (1 + |slope|)), which blocks both the transmittance and the light beyond. Splits, strips and the even nodes\' far terms mix both roundings; the shared prefix of neighbouring lines is a stored record of expected moments (+1 record per ray, 2× ray memory). Solid lights become opaque cells that emit (Python: stoch_onepass NOCOND=1 NOLAM=1 QC=match, GPU forms stoch5_gpu_forms.py); replaces stochastic transmittance',
+        ...field(cfg, 'onepass'),
+        url: ['onepass', false],
+      });
+      toggle(F, {
+        label: 'opaque-emission kernel',
+        title: 'one-pass: every atom counts an emitting cell\'s projected width, (|cos| + |sin|) / r, the kernel of an opaque emitter. Applied to all light, so it is right only for scenes whose lights are all solid (volume lights get up to 1.41× too much on diagonals); mixed scenes would need the solid share per record',
+        ...field(cfg, 'opaqueKernel'),
+        enabled: () => cfg.onepass,
+        url: ['opq', false],
+      });
 
       const O = $('output');
       const redrawOnly = () => (redraw = true);
@@ -1000,7 +1021,7 @@
           let i = cell.x * N + (N - 1 - cell.y);
           let a = A[i]; let e = E[i]; let f = max(F[i], 0.0) * P.y;
           var S = 0.0;   // the material's radiance, from E and A (see material() in the page)
-          if (e > 0.0) { S = select(e, e / max(-log(a), 1e-6), a < 1.0); }
+          if (e > 0.0) { S = select(select(e, e / max(-log(a), 1e-6), a < 1.0), e, a <= 0.0); }
           let opaque = a <= 0.0 || (e > 0.0 && a < 0.05);   // walls, and dense emitters drawn as surfaces of radiance S
           if (P.w > 0.5) {   // the rasterised scene
             var c = vec3f(0.04) + vec3f(0.55) * (1.0 - a);
@@ -1041,7 +1062,7 @@
         if (key === cascadeKey) return cascade;
         if (cascade) for (const v of Object.values(cascade)) if (v instanceof GPUBuffer) v.destroy();
         const N = cfg.N;
-        cascade = new MomentHRC(device, N, { abs: 'sec', f16: cfg.f16, fam: cfg.fam }); // abs: until the reference drops the point convention
+        cascade = new MomentHRC(device, N, { abs: 'sec', f16: cfg.f16, fam: cfg.fam, stochastic: cfg.onepass ? 'onepass' : cfg.stochastic, opaqueKernel: cfg.opaqueKernel }); // abs: until the reference drops the point convention
         cascadeKey = key;
         E = new Float32Array(N * N);
         A = new Float32Array(N * N);

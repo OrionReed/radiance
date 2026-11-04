@@ -1,0 +1,844 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Moment HRC Rays</title>
+    <meta name="description" content="Every ray one point reads in moment HRC (odd merging), and how each is built by extension." />
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      :root {
+        --bg: #0e0e0e;
+        --panel: #151515;
+        --line: rgba(255, 255, 255, 0.08);
+        --text: rgba(255, 255, 255, 0.82);
+        --dim: rgba(255, 255, 255, 0.45);
+        --faint: rgba(255, 255, 255, 0.28);
+        --ctl: rgba(255, 255, 255, 0.06);
+        --ctl-hover: rgba(255, 255, 255, 0.11);
+        --on: #d8d8d8;
+        --on-text: #111;
+        --accent: #7fc8a9;
+        --first: #ffd166;
+        --second: #4ed8c9;
+        --away: #e8935a;
+        --toward: #5a9be8;
+        --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+      }
+      body {
+        display: grid;
+        grid-template-columns: 236px minmax(0, 1fr) 380px;
+        background: var(--bg);
+        color: var(--text);
+        font: 12px/1.35 system-ui, -apple-system, 'Segoe UI', sans-serif;
+      }
+      #canvas-area {
+        position: relative;
+        min-width: 0;
+        overflow: hidden;
+      }
+      #view {
+        position: absolute;
+        image-rendering: pixelated;
+      }
+      aside {
+        background: var(--panel);
+        overflow-y: auto;
+        scrollbar-width: thin;
+        user-select: none;
+      }
+      #left {
+        border-right: 1px solid var(--line);
+      }
+      #right {
+        border-left: 1px solid var(--line);
+      }
+      section {
+        padding: 12px 12px 14px;
+        border-bottom: 1px solid var(--line);
+      }
+      section > h2 {
+        margin: 0 0 10px;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 1.4px;
+        text-transform: uppercase;
+        color: var(--dim);
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+      }
+      section > h2 small {
+        font-weight: 400;
+        letter-spacing: 0;
+        text-transform: none;
+        color: var(--faint);
+        font-family: var(--mono);
+      }
+      .field {
+        margin-top: 10px;
+      }
+      .field:first-of-type {
+        margin-top: 0;
+      }
+      .label {
+        font-size: 11px;
+        color: var(--dim);
+        margin-bottom: 4px;
+      }
+      .seg {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: 1fr;
+        gap: 2px;
+        background: var(--ctl);
+        border-radius: 6px;
+        padding: 2px;
+      }
+      .seg button {
+        font: inherit;
+        font-size: 11px;
+        color: var(--dim);
+        background: none;
+        border: 0;
+        border-radius: 4px;
+        padding: 4px 2px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .seg button:hover {
+        color: var(--text);
+        background: var(--ctl-hover);
+      }
+      .seg button.on {
+        background: var(--on);
+        color: var(--on-text);
+      }
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        font: inherit;
+        color: var(--text);
+        background: none;
+        border: 0;
+        padding: 5px 0;
+        cursor: pointer;
+        text-align: left;
+      }
+      .toggle .sw {
+        flex: none;
+        width: 26px;
+        height: 14px;
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.14);
+        position: relative;
+        transition: background 0.12s;
+      }
+      .toggle .sw::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.7);
+        transition: transform 0.12s;
+      }
+      .toggle.on .sw {
+        background: var(--accent);
+      }
+      .toggle.on .sw::after {
+        transform: translateX(12px);
+        background: #fff;
+      }
+      /* level chips: click to hide / show a level */
+      #levels {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2px;
+      }
+      #levels button {
+        font: inherit;
+        font-size: 11px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--text);
+        background: var(--ctl);
+        border: 0;
+        border-radius: 4px;
+        padding: 3px 6px;
+        cursor: pointer;
+      }
+      #levels button:hover {
+        background: var(--ctl-hover);
+      }
+      #levels button.off {
+        color: var(--faint);
+      }
+      #levels button.off .sw {
+        opacity: 0.2;
+      }
+      #levels .sw {
+        width: 10px;
+        height: 10px;
+        border-radius: 2px;
+        flex: none;
+      }
+      #levels .n {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--faint);
+      }
+      .hint {
+        font-size: 10.5px;
+        color: var(--faint);
+        line-height: 1.5;
+      }
+      .hint p {
+        margin: 0 0 6px;
+      }
+      .hint b {
+        color: var(--dim);
+        font-weight: 600;
+      }
+      kbd {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--dim);
+        border: 1px solid var(--line);
+        border-radius: 3px;
+        padding: 0 3px;
+      }
+      code,
+      .mono {
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+      #ray-info {
+        color: var(--dim);
+        line-height: 1.55;
+        min-height: 4.6em;
+      }
+      #ray-info .big {
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--text);
+      }
+      #ray-info .pin {
+        color: var(--accent);
+        font-size: 10px;
+        margin-left: 6px;
+      }
+      #ext {
+        display: block;
+        width: 100%;
+        margin: 10px 0 8px;
+      }
+      #seg-info {
+        color: var(--dim);
+        line-height: 1.55;
+      }
+      #seg-info .eq {
+        font-family: var(--mono);
+        color: var(--text);
+        font-size: 12px;
+        margin-bottom: 4px;
+      }
+      .c1 {
+        color: var(--first);
+      }
+      .c2 {
+        color: var(--second);
+      }
+      .away {
+        color: var(--away);
+      }
+      .toward {
+        color: var(--toward);
+      }
+      .key {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 12px;
+        margin-top: 8px;
+        font-size: 10.5px;
+        color: var(--faint);
+      }
+      .key i {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        border-radius: 2px;
+        margin-right: 4px;
+        vertical-align: -1px;
+      }
+    </style>
+  </head>
+  <body>
+    <aside id="left">
+      <section>
+        <h2>setup <small id="pt"></small></h2>
+        <div class="field"><div class="label">cells (N × N)</div><div class="seg" id="seg-N"></div></div>
+        <div class="field"><div class="label">line family</div><div class="seg" id="seg-fam"></div></div>
+        <div class="field"><div class="label">frustum</div><div class="seg" id="seg-frustum"></div></div>
+        <div class="field"><button class="toggle" id="tog-cells"><span class="sw"></span><span>shade cells</span></button></div>
+      </section>
+      <section>
+        <h2>levels <small id="count"></small></h2>
+        <div id="levels"></div>
+      </section>
+      <section class="hint">
+        <p><b>Drag</b> the ring to move the point, or <kbd>←</kbd><kbd>↑</kbd><kbd>→</kbd><kbd>↓</kbd>. <b>Hover</b> a ray to see how it
+          is built, <b>scroll</b> to cycle rays that overlap there, <b>click</b> to pin it (<kbd>Esc</kbd> unpins).</p>
+        <p>Every node merges as odd: cone <code>c</code> of level <code>l</code> reads its two lines <code>c − n</code>, <code>c + 1 − n</code>
+          (<code>n = 2<sup>l</sup></code>), and its two level-<code>l+1</code> children start where those lines end. Even merging is not
+          drawn, and roots are wherever lines end, not snapped to the <code>2<sup>l</sup></code> lattice the GPU records sit on.</p>
+        <p>Subtrees rooted outside the domain's rows are dropped, as the shader drops them.</p>
+      </section>
+    </aside>
+    <main id="canvas-area"><canvas id="view"></canvas></main>
+    <aside id="right">
+      <section>
+        <h2>extension <small id="ray-id"></small></h2>
+        <div id="ray-info"></div>
+        <canvas id="ext"></canvas>
+        <div id="seg-info"></div>
+        <div class="key">
+          <span><i style="background: var(--first)"></i>first half</span>
+          <span><i style="background: var(--second)"></i>second half</span>
+          <span><i style="background: #6b6b6b"></i>even j: exact halves</span>
+          <span><i style="background: var(--away)"></i>odd j: rounded away from 0</span>
+          <span><i style="background: var(--toward)"></i>odd j: toward 0</span>
+        </div>
+      </section>
+      <section class="hint">
+        <p>The bars under the line are its extension tree: level <code>k</code> splits each piece <code>(k, j)</code> into
+          <code>(k−1, a)</code> then <code>(k−1, j−a)</code>, the second rooted where the first ends, with <code>a = split(k, j)</code>.
+          <b>Hover a bar</b> to see that piece's two halves.</p>
+        <p>The record is merged as <code>μ₀ = μ₀′ + T′μ₀″</code>, <code>μ₁ = ½(μ₁′ + T′(μ₀″ + μ₁″))</code>,
+          <code>μ₂ = ¼(μ₂′ + T′(μ₀″ + 2μ₁″ + μ₂″))</code>, <code>T = T′T″</code> (′ first half, ″ second).</p>
+      </section>
+    </aside>
+
+    <script type="module">
+      import { splitRule, lineRowsOf } from '../moment-hrc/moment-hrc.js';
+
+      const $ = (id) => document.getElementById(id);
+      const el = (tag, props = {}, ...kids) => {
+        const e = Object.assign(document.createElement(tag), props);
+        e.append(...kids);
+        return e;
+      };
+
+      const LEVEL_COLORS = ['#f0f0f0', '#ff8a5c', '#ffd166', '#9be564', '#4ed8c9', '#5aa9ff', '#a98bff', '#ff7ac6', '#c8c8a0', '#9adfff'];
+      const levelColor = (m) => LEVEL_COLORS[m % LEVEL_COLORS.length];
+      const FRUSTUMS = ['+x', '+y', '−x', '−y', 'all'];
+
+      const state = { N: 64, fam: 'lbal', frustum: 0, point: [16, 32], cells: true, hidden: new Set() };
+      let LT = 1, split = splitRule('lbal');
+      let rays = [];             // { key, f, m, X, y, j, rows, cells, pts, uses }
+      let hover = null, pinned = null, candidates = [], cycle = 0;
+      let focus = null, segs = [];   // the extension view's pieces of the active ray, and the hovered one
+
+      // ════════════════════════════════════════════════════════════════════
+      // Frames: each frustum is solved in the scene rotated to look along +x (as sceneIndex in the shader).
+      // Scene y is up; the canvas draws row N − 1 at the top.
+      // ════════════════════════════════════════════════════════════════════
+      function toScene(f, x, y) {
+        const M = state.N - 1;
+        return [[x, y], [M - y, x], [M - x, M - y], [y, M - x]][f];
+      }
+      function toFrame(f, sx, sy) {
+        const M = state.N - 1;
+        return [[sx, sy], [sy, M - sx], [M - sx, M - sy], [M - sy, sx]][f];
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // The rays the point reads: per frustum, its two level-0 cones, each reading its two lines and recursing into the
+      // two children rooted where those lines end. A line shared by two cones is one ray with two uses.
+      // ════════════════════════════════════════════════════════════════════
+      function build() {
+        const { N } = state;
+        LT = Math.max(1, Math.ceil(Math.log2(N)));
+        split = splitRule(state.fam);
+        const memo = new Map();
+        const rowsOf = (m, j) => {
+          const k = `${m}:${j}`;
+          if (!memo.has(k)) memo.set(k, lineRowsOf(split, m, j));
+          return memo.get(k);
+        };
+        const byKey = new Map();
+        rays = [];
+        const add = (f, m, X, y, j, use) => {
+          const key = `${f}:${m}:${X}:${y}:${j}`;
+          let ray = byKey.get(key);
+          if (!ray) {
+            const rows = rowsOf(m, j), L = 1 << m, cells = [];
+            for (let t = 1; t <= L && X + t <= N - 1; t++) cells.push([X + t, y + rows[t - 1]]);
+            const pts = [[X, y], ...cells].map(([x, r]) => toScene(f, x, r));   // root, then the cells
+            ray = { key, f, m, X, y, j, rows, cells, pts, uses: [] };
+            byKey.set(key, ray);
+            rays.push(ray);
+          }
+          ray.uses.push(use);
+        };
+        for (const f of state.frustum === 4 ? [0, 1, 2, 3] : [state.frustum]) {
+          const [px, py] = toFrame(f, ...state.point);
+          const visit = (l, X, y, c) => {
+            if (X >= N - 1 || y < 0 || y >= N) return;
+            const n = 1 << l, j0 = c - n;
+            add(f, l, X, y, j0, { l, c, X, y, edge: 'lower' });
+            add(f, l, X, y, j0 + 1, { l, c, X, y, edge: 'upper' });
+            if (l >= LT || X + n >= N - 1) return;
+            visit(l + 1, X + n, y + j0, 2 * c);
+            visit(l + 1, X + n, y + j0 + 1, 2 * c + 1);
+          };
+          visit(0, px, py, 0);
+          visit(0, px, py, 1);
+        }
+        const find = (r) => (r && byKey.get(r.key)) || null;
+        hover = find(hover);
+        pinned = find(pinned);
+        candidates = [];
+        renderLevels();
+        $('pt').textContent = `(${state.point[0]}, ${state.point[1]})`;
+      }
+      const visible = (ray) => !state.hidden.has(ray.m);
+
+      // ════════════════════════════════════════════════════════════════════
+      // Controls
+      // ════════════════════════════════════════════════════════════════════
+      const syncs = [];
+      function segmented(id, options, get, set) {
+        const buttons = options.map(([value, text]) => {
+          const b = el('button', { textContent: text });
+          b.addEventListener('click', () => {
+            set(value);
+            update();
+          });
+          $(id).append(b);
+          return [value, b];
+        });
+        syncs.push(() => buttons.forEach(([v, b]) => b.classList.toggle('on', v === get())));
+      }
+      segmented('seg-N', [32, 64, 128, 256].map((n) => [n, String(n)]), () => state.N, (n) => {
+        state.point = state.point.map((v) => Math.min(n - 1, Math.floor((v * n) / state.N)));
+        state.N = n;
+      });
+      segmented('seg-fam', [['lbal', 'lbal'], ['lsym', 'lsym']], () => state.fam, (v) => (state.fam = v));
+      segmented('seg-frustum', FRUSTUMS.map((t, i) => [i, t]), () => state.frustum, (v) => (state.frustum = v));
+      $('tog-cells').addEventListener('click', () => {
+        state.cells = !state.cells;
+        update();
+      });
+      syncs.push(() => $('tog-cells').classList.toggle('on', state.cells));
+
+      function renderLevels() {
+        const counts = Array.from({ length: LT + 1 }, () => 0);
+        let cells = 0;
+        for (const r of rays) {
+          counts[r.m]++;
+          cells += r.cells.length;
+        }
+        $('levels').replaceChildren(
+          ...counts.map((n, m) => {
+            const b = el('button', { className: state.hidden.has(m) ? 'off' : '', title: `${n} rays of ${1 << m} columns` },
+              el('span', { className: 'sw', style: `background:${levelColor(m)}` }), `level ${m}`, el('span', { className: 'n', textContent: n }));
+            b.addEventListener('click', () => {
+              state.hidden.has(m) ? state.hidden.delete(m) : state.hidden.add(m);
+              update(false);
+            });
+            return b;
+          }),
+        );
+        $('count').textContent = `${rays.length} rays · ${cells} cells`;
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // Main view: the rays as polylines through their cells' centres (from the root), by level. The unhighlighted
+      // picture is cached in base and redrawn only when the rays change.
+      // ════════════════════════════════════════════════════════════════════
+      const view = $('view'), vctx = view.getContext('2d');
+      const base = document.createElement('canvas'), bctx = base.getContext('2d');
+      const dpr = () => window.devicePixelRatio || 1;
+      const cellPx = () => view.width / state.N;
+      const px = (p) => (p[0] + 0.5) * cellPx();
+      const py = (p) => (state.N - 1 - p[1] + 0.5) * cellPx();
+
+      function layout() {
+        const r = $('canvas-area').getBoundingClientRect();
+        const d = Math.max(64, Math.floor(Math.min(r.width, r.height) - 48));
+        Object.assign(view.style, { width: d + 'px', height: d + 'px', left: Math.floor((r.width - d) / 2) + 'px', top: Math.floor((r.height - d) / 2) + 'px' });
+        view.width = view.height = base.width = base.height = Math.round(d * dpr());
+        renderBase();
+        draw();
+      }
+
+      function renderBase() {
+        const { N } = state, W = base.width, s = W / N;
+        bctx.fillStyle = '#0a0a0a';
+        bctx.fillRect(0, 0, W, W);
+        if (s >= 6) {
+          bctx.strokeStyle = 'rgba(255,255,255,0.045)';
+          bctx.lineWidth = 1;
+          bctx.beginPath();
+          for (let i = 0; i <= N; i++) {
+            const v = Math.round(i * s) + 0.5;
+            bctx.moveTo(v, 0), bctx.lineTo(v, W), bctx.moveTo(0, v), bctx.lineTo(W, v);
+          }
+          bctx.stroke();
+        }
+        const shown = rays.filter(visible);
+        if (state.cells) {
+          bctx.globalAlpha = 0.07;
+          for (const r of shown) {
+            bctx.fillStyle = levelColor(r.m);
+            for (let i = 1; i < r.pts.length; i++) bctx.fillRect(px(r.pts[i]) - s / 2, py(r.pts[i]) - s / 2, s, s);
+          }
+          bctx.globalAlpha = 1;
+        }
+        bctx.lineWidth = Math.max(1, 1.1 * dpr());
+        bctx.lineJoin = 'round';
+        bctx.globalAlpha = 0.75;
+        for (let m = 0; m <= LT; m++) {
+          bctx.strokeStyle = levelColor(m);
+          bctx.beginPath();
+          for (const r of shown) {
+            if (r.m !== m) continue;
+            r.pts.forEach((p, i) => (i ? bctx.lineTo(px(p), py(p)) : bctx.moveTo(px(p), py(p))));
+          }
+          bctx.stroke();
+        }
+        bctx.globalAlpha = 1;
+      }
+
+      const active = () => pinned ?? hover;
+      function draw() {
+        const W = view.width, s = cellPx(), ray = active();
+        vctx.clearRect(0, 0, W, W);
+        vctx.globalAlpha = ray ? 0.32 : 1;
+        vctx.drawImage(base, 0, 0);
+        vctx.globalAlpha = 1;
+        if (ray) {
+          const col = levelColor(ray.m);
+          vctx.fillStyle = col;
+          vctx.globalAlpha = 0.45;
+          for (let i = 1; i < ray.pts.length; i++) vctx.fillRect(px(ray.pts[i]) - s / 2, py(ray.pts[i]) - s / 2, s, s);
+          vctx.globalAlpha = 1;
+          vctx.strokeStyle = '#fff';
+          vctx.lineWidth = Math.max(1.5, 2 * dpr());
+          vctx.beginPath();
+          ray.pts.forEach((p, i) => (i ? vctx.lineTo(px(p), py(p)) : vctx.moveTo(px(p), py(p))));
+          vctx.stroke();
+          vctx.fillStyle = '#fff';   // the root
+          vctx.beginPath();
+          vctx.arc(px(ray.pts[0]), py(ray.pts[0]), Math.max(3 * dpr(), s * 0.3), 0, 2 * Math.PI);
+          vctx.fill();
+        }
+        // the point
+        const p = state.point;
+        vctx.strokeStyle = '#fff';
+        vctx.lineWidth = 2 * dpr();
+        vctx.beginPath();
+        vctx.arc(px(p), py(p), Math.max(6 * dpr(), s * 0.75), 0, 2 * Math.PI);
+        vctx.stroke();
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // Hovering: the rays nearest the cursor (in cells, scene coordinates). Rays that coincide there are all
+      // candidates; the wheel cycles through them.
+      // ════════════════════════════════════════════════════════════════════
+      function segDist(px0, py0, ax, ay, bx, by) {
+        const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+        const t = l2 ? Math.max(0, Math.min(1, ((px0 - ax) * dx + (py0 - ay) * dy) / l2)) : 0;
+        return Math.hypot(px0 - ax - t * dx, py0 - ay - t * dy);
+      }
+      function rayDist(ray, x, y) {
+        let d = Infinity;
+        const p = ray.pts;
+        if (p.length === 1) return Math.hypot(x - p[0][0], y - p[0][1]);
+        for (let i = 1; i < p.length; i++) d = Math.min(d, segDist(x, y, p[i - 1][0], p[i - 1][1], p[i][0], p[i][1]));
+        return d;
+      }
+      const toCells = (e) => {
+        const r = view.getBoundingClientRect(), s = r.width / state.N;
+        return [(e.clientX - r.left) / s - 0.5, state.N - 1 - ((e.clientY - r.top) / s - 0.5)];
+      };
+      function pick(e) {
+        const [x, y] = toCells(e), reach = Math.max(0.75, 7 / (view.getBoundingClientRect().width / state.N));
+        const hits = [];
+        for (const r of rays) {
+          if (!visible(r)) continue;
+          const d = rayDist(r, x, y);
+          if (d < reach) hits.push([d, r]);
+        }
+        hits.sort((a, b) => a[0] - b[0] || a[1].m - b[1].m);
+        const next = hits.filter(([d]) => d <= hits[0][0] + 0.05).map(([, r]) => r);
+        if (next.map((r) => r.key).join() !== candidates.map((r) => r.key).join()) cycle = 0;
+        candidates = next;
+        setHover(candidates.length ? candidates[cycle % candidates.length] : hover);
+      }
+      function setHover(r) {
+        if (r === hover) return;
+        hover = r;
+        if (!pinned) activeChanged();
+      }
+
+      let drag = null;   // { moved } while the point is dragged or a click is pending
+      const nearPoint = (e) => {
+        const [x, y] = toCells(e);
+        return Math.hypot(x - state.point[0], y - state.point[1]) <= Math.max(1.2, 9 / (view.getBoundingClientRect().width / state.N));
+      };
+      view.addEventListener('pointerdown', (e) => {
+        drag = { point: nearPoint(e), x: e.clientX, y: e.clientY };
+        if (drag.point) view.setPointerCapture(e.pointerId);
+      });
+      view.addEventListener('pointermove', (e) => {
+        if (drag?.point) {
+          const [x, y] = toCells(e).map((v) => Math.max(0, Math.min(state.N - 1, Math.round(v))));
+          if (x !== state.point[0] || y !== state.point[1]) {
+            state.point = [x, y];
+            update();
+          }
+          return;
+        }
+        pick(e);
+        view.style.cursor = nearPoint(e) ? 'grab' : candidates.length ? 'pointer' : 'default';
+      });
+      view.addEventListener('pointerup', (e) => {
+        if (drag && !drag.point && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 4) {
+          pinned = hover && pinned !== hover ? hover : null;
+          activeChanged();
+        }
+        drag = null;
+      });
+      view.addEventListener('wheel', (e) => {
+        if (candidates.length < 2) return;
+        e.preventDefault();
+        cycle = (cycle + (e.deltaY > 0 ? 1 : candidates.length - 1)) % candidates.length;
+        setHover(candidates[cycle]);
+      }, { passive: false });
+      window.addEventListener('keydown', (e) => {
+        const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }[e.key];
+        if (step) {
+          e.preventDefault();
+          state.point = state.point.map((v, i) => Math.max(0, Math.min(state.N - 1, v + step[i])));
+          update();
+        } else if (e.key === 'Escape' && pinned) {
+          pinned = null;
+          activeChanged();
+        }
+      });
+
+      // ════════════════════════════════════════════════════════════════════
+      // Extension view: the active ray in its own frame (+x, row offsets up), its cells coloured by the focused
+      // piece's two halves, and below it the extension tree, one row of bars per level.
+      // ════════════════════════════════════════════════════════════════════
+      const ext = $('ext'), ectx = ext.getContext('2d');
+      let geo = null;   // the extension view's layout, for hit testing
+
+      // pieces of line (k, j) rooted at column offset t0, row offset r0 of the ray
+      function piecesOf(k, j, t0, r0, out) {
+        const piece = { k, j, t0, r0 };
+        out.push(piece);
+        if (k > 0) {
+          const a = split(k, j), h = 1 << (k - 1);
+          piece.a = a;
+          piecesOf(k - 1, a, t0, r0, out);
+          piecesOf(k - 1, j - a, t0 + h, r0 + a, out);
+        }
+        return out;
+      }
+      const rounding = (p) => (p.k === 0 || (p.j & 1) === 0 ? 'even' : Math.abs(p.a) * 2 > Math.abs(p.j) ? 'away' : 'toward');
+
+      function activeChanged() {
+        const ray = active();
+        segs = ray ? piecesOf(ray.m, ray.j, 0, 0, []) : [];
+        focus = segs[0] ?? null;
+        renderInfo();
+        drawExt();
+        draw();
+      }
+
+      function renderInfo() {
+        const ray = active();
+        if (!ray) {
+          $('ray-id').textContent = '';
+          $('ray-info').replaceChildren(el('div', { textContent: 'Hover a ray on the canvas.' }));
+          return;
+        }
+        const { m, X, y, j, f } = ray, L = 1 << m;
+        $('ray-id').textContent = `${FRUSTUMS[f]} frame`;
+        const uses = ray.uses.map((u) => `${u.edge} line of cone ${u.c} of level ${u.l}`);
+        $('ray-info').replaceChildren(
+          el('div', { className: 'big', innerHTML: `ray (${m}, ${X}, ${y}, ${j})${pinned ? '<span class="pin">pinned</span>' : ''}` }),
+          el('div', { textContent: `${L} column${L > 1 ? 's' : ''} after column ${X}, from row ${y}, slope ${j}/${L}` +
+            (ray.cells.length < L ? ` · ${ray.cells.length} inside the domain` : '') }),
+          el('div', { textContent: uses.join('; ') + (uses.length > 1 ? ' (read by both)' : '') }),
+          candidates.length > 1 && !pinned ? el('div', { textContent: `${(cycle % candidates.length) + 1} of ${candidates.length} rays here, scroll to cycle` }) : '',
+        );
+      }
+
+      function drawExt() {
+        const ray = active();
+        const W = ext.clientWidth;
+        if (!ray) {
+          ext.style.height = '0px';
+          ext.height = 0;
+          $('seg-info').replaceChildren();
+          geo = null;
+          return;
+        }
+        const L = 1 << ray.m, rows = [0, ...ray.rows];
+        const lo = Math.min(...rows), hi = Math.max(...rows), H = hi - lo + 1;
+        const gutter = 30, g = Math.min(24, (W - gutter - 4) / (L + 1), 220 / H);
+        const x0 = gutter, gy0 = 4, rowH = 15, rowGap = 3;
+        const by0 = gy0 + H * g + 14;
+        const height = by0 + (ray.m + 1) * (rowH + rowGap);
+        geo = { x0, g, by0, rowH, rowGap };
+        const r = dpr();
+        ext.style.height = height + 'px';
+        ext.width = Math.round(W * r);
+        ext.height = Math.round(height * r);
+        const c = ectx;
+        c.setTransform(r, 0, 0, r, 0, 0);
+        c.clearRect(0, 0, W, height);
+        const cx = (t) => x0 + (t + 0.5) * g, cy = (row) => gy0 + (hi - row + 0.5) * g;
+
+        // cells, coloured by the focused piece's halves
+        const F = focus, h = F.k > 0 ? 1 << (F.k - 1) : 1;
+        const inside = Math.min(L, state.N - 1 - ray.X);   // columns before the domain's end
+        for (let t = 1; t <= L; t++) {
+          const rel = t - F.t0;
+          c.fillStyle = rel >= 1 && rel <= h ? '#ffd166' : rel > h && rel <= 2 * h && F.k > 0 ? '#4ed8c9' : '#3a3a3a';
+          c.globalAlpha = t <= inside ? 1 : 0.35;
+          c.fillRect(cx(t) - g / 2 + 0.5, cy(ray.rows[t - 1]) - g / 2 + 0.5, Math.max(1, g - 1), Math.max(1, g - 1));
+        }
+        c.globalAlpha = 1;
+        c.strokeStyle = '#fff';
+        c.lineWidth = 1;
+        c.strokeRect(cx(0) - g / 2 + 0.5, cy(0) - g / 2 + 0.5, Math.max(1, g - 1), Math.max(1, g - 1));   // the root
+        // the ideal line from the root to the end
+        c.setLineDash([3, 3]);
+        c.strokeStyle = 'rgba(255,255,255,0.4)';
+        c.beginPath();
+        c.moveTo(cx(0), cy(0));
+        c.lineTo(cx(L), cy(ray.j));
+        c.stroke();
+        c.setLineDash([]);
+        // the focused piece's root, and its second half's root (where the first half ends)
+        const dot = (t, row, col) => {
+          c.fillStyle = col;
+          c.beginPath();
+          c.arc(cx(t), cy(row), Math.max(2, g * 0.22), 0, 2 * Math.PI);
+          c.fill();
+        };
+        dot(F.t0, F.r0, '#fff');
+        if (F.k > 0) dot(F.t0 + h, F.r0 + F.a, '#4ed8c9');
+
+        // the extension tree: row 0 is the whole ray (level m), the last row its cells (level 0)
+        c.font = `10px ${getComputedStyle(document.body).getPropertyValue('--mono')}`;
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        const fill = { even: '#6b6b6b', away: '#e8935a', toward: '#5a9be8' };
+        for (const p of segs) {
+          const row = ray.m - p.k, y = by0 + row * (rowH + rowGap);
+          const xa = x0 + (p.t0 + 1) * g, xb = x0 + (p.t0 + (1 << p.k) + 1) * g, w = xb - xa;
+          const inFocus = p.t0 >= F.t0 && p.t0 + (1 << p.k) <= F.t0 + (1 << F.k) && p.k <= F.k;
+          c.fillStyle = p.k === 0 ? '#4a4a4a' : fill[rounding(p)];
+          c.globalAlpha = inFocus ? 1 : 0.45;
+          c.fillRect(xa + 0.5, y, Math.max(0.5, w - 1), rowH);
+          c.globalAlpha = 1;
+          if (p === F) {
+            c.strokeStyle = '#fff';
+            c.lineWidth = 1.5;
+            c.strokeRect(xa + 0.5, y + 0.5, Math.max(0.5, w - 1), rowH - 1);
+          }
+          if (w >= 14) {
+            c.fillStyle = '#111';
+            c.fillText(String(p.j), (xa + xb) / 2, y + rowH / 2 + 0.5);
+          }
+        }
+        c.textAlign = 'right';
+        c.fillStyle = 'rgba(255,255,255,0.45)';
+        for (let k = ray.m; k >= 0; k--) c.fillText(`k=${k}`, x0 - 5, by0 + (ray.m - k) * (rowH + rowGap) + rowH / 2 + 0.5);
+        renderSegInfo();
+      }
+
+      function renderSegInfo() {
+        const F = focus, ray = active();
+        if (!F || !ray) return;
+        const at = `column +${F.t0}, row ${F.r0 >= 0 ? '+' : ''}${F.r0}`;
+        if (F.k === 0) {
+          const x = ray.X + F.t0 + 1, y = ray.y + F.r0 + F.j;
+          $('seg-info').replaceChildren(
+            el('div', { className: 'eq', textContent: `(0, ${F.j}) from ${at}` }),
+            el('div', { textContent: `a level-0 record: the one cell (${x}, ${y}) of the ${FRUSTUMS[ray.f]} frame. T = a^sec, the cell's emission ` +
+              `attenuated inside it, μ₀ = μ₁ = μ₂.` }),
+          );
+          return;
+        }
+        const a = F.a, b = F.j - a, h = 1 << (F.k - 1), kind = rounding(F);
+        let why;
+        if (kind === 'even') why = `j is even, so a = j/2 exactly.`;
+        else {
+          const lvl = F.k % 2 ? 'odd' : 'even', aj = Math.abs(F.j);
+          const rule = state.fam === 'lsym'
+            ? `lsym rounds away at even levels and toward at odd ones; level ${F.k} is ${lvl}`
+            : F.k % 2 ? `lbal at an odd level: away when bit 1 of |j| is clear; |j| = ${aj}, bit 1 = ${(aj >> 1) & 1}`
+                      : `lbal at an even level: away when bit 2 of |j| is set; |j| = ${aj}, bit 2 = ${(aj >> 2) & 1}`;
+          why = `j is odd, so |j|/2 = ${aj / 2} is rounded <span class="${kind}">${kind === 'away' ? 'away from' : 'toward'} zero</span> (${rule}).`;
+        }
+        $('seg-info').replaceChildren(
+          el('div', { className: 'eq', innerHTML: `(${F.k}, ${F.j}) = <span class="c1">(${F.k - 1}, ${a})</span> + <span class="c2">(${F.k - 1}, ${b})</span>` }),
+          el('div', { innerHTML: `From ${at}: the <span class="c1">first half</span> rises ${a}, then the <span class="c2">second half</span> ` +
+            `starts ${h} column${h > 1 ? 's' : ''} on and ${a} row${Math.abs(a) === 1 ? '' : 's'} up (the dot) and rises ${b}. ${why}` }),
+        );
+      }
+
+      ext.addEventListener('pointermove', (e) => {
+        if (!geo) return;
+        const r = ext.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+        const row = Math.floor((y - geo.by0) / (geo.rowH + geo.rowGap));
+        const ray = active();
+        if (row < 0 || row > ray.m) return;
+        const k = ray.m - row, t = Math.floor((x - geo.x0) / geo.g);   // the column under the cursor
+        const p = segs.find((s) => s.k === k && t >= s.t0 + 1 && t <= s.t0 + (1 << k));
+        if (p && p !== focus) {
+          focus = p;
+          drawExt();
+        }
+      });
+
+      // ════════════════════════════════════════════════════════════════════
+      function update(rebuild = true) {
+        if (rebuild) build();
+        else renderLevels();
+        syncs.forEach((s) => s());
+        renderBase();
+        activeChanged();
+      }
+      window.addEventListener('resize', () => {
+        layout();
+        drawExt();
+      });
+      update();
+      layout();
+    </script>
+  </body>
+</html>

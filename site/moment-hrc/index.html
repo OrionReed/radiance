@@ -471,7 +471,7 @@
         <div id="legend"></div>
       </section>
       <section id="tools">
-        <span id="fps" title="cascade frame: scene upload + four frustums + draw, submit to done (recomputed only when the scene changes); click for the perf graph" style="cursor: pointer"></span>
+        <span id="fps" title="cascade frame: scene upload + four quadrants + draw, submit to done (recomputed only when the scene changes); click for the perf graph" style="cursor: pointer"></span>
         <button id="bench-btn" title="time this N in this browser: cascade passes alone, a full frame, the draw alone (console has the table)">bench</button>
         <button id="shot-btn" title="screenshot (s)">shot</button>
         <button id="help-btn" title="keyboard shortcuts (?)">?</button>
@@ -479,9 +479,8 @@
     </aside>
 
     <script type="module">
-      // Moment HRC: interactive page (the cascade is website/demos/shaders/moment-hrc.js; research in research/director_notes).
-      // Layout and controls follow the old hrc-ratio page; no dependencies besides the cascade module.
-      // Scenes are plain data (rectangles in scene units), rasterised on the CPU into emission E and transmittance A.
+      // Moment HRC: interactive page. Scenes are plain data (rectangles in scene units), rasterised on the CPU into emission E
+      // and transmittance A.
       import { MomentHRC } from './moment-hrc.js';
 
       const $ = (id) => document.getElementById(id);
@@ -495,7 +494,7 @@
       // ════════════════════════════════════════════════════════════════════
       // State. cfg rebuilds the cascade when it changes; out only redraws.
       // ════════════════════════════════════════════════════════════════════
-      const cfg = { N: 512, fam: 'lbal', f16: false, stochastic: false, onepass: false, opaqueKernel: false };
+      const cfg = { N: 512, splitRule: 'balanced', halfFloatRays: false, averagedRounding: false, onePass: false, opaqueLightKernel: false };
       const out = { view: 'fluence', map: 'tone', exposure: 2, dither: true, tint: false };
       let dirty = true, redraw = true;
       const touch = () => (dirty = true);
@@ -631,8 +630,8 @@
         [-200, 12, 16, 24, 6], [-200, 36, 16, 24, 7], [-200, 60, 16, 24, 8],
         [-5, -500, 8, 488, 1], [-5, 12, 8, 500, 1],
       ];
-      // until solid lights are settled: every opaque light (a coloured shape at full opacity) is drawn as its volume
-      // equivalent; scenes that had one are also listed with their solid lights in the last section, for testing
+      // every opaque light (a coloured shape at full opacity) is drawn as its volume equivalent; scenes with one are also
+      // listed with their opaque lights in the last section
       const isSolidLight = ([, , , , colour, opts]) => colour >= 2 && (opts?.opacity ?? 1) >= 1;
       const asVolume = (list) => list.map((s) => (isSolidLight(s) ? [...s.slice(0, 5), V0] : s));
       const solidScenes = [];
@@ -647,7 +646,7 @@
         [-250, -200, 500, 12, 1], [-250, 188, 500, 12, 1], [-250, -200, 12, 400, 1], [238, -200, 12, 400, 1],
         [-120, -120, 8, 8, 9, V0], [120, 90, 6, 6, 3, V0], [-20, -20, 60, 40, 1], [60, -140, 8, 120, 1],
       ]);
-      // the old research page's scene: a light behind a wall with a gap, an absorbing box, a second light
+      // a light behind a wall with a gap, an absorbing box, a second light
       staticScene('volumetric lights', 'Gap + box', [
         [-8, -8, 16, 16, 9, V0], [192, -320, 16, 272, 1], [192, 48, 16, 272, 1], [-352, -240, 192, 16, 1],
         [-256, 128, 160, 160, 0, { opacity: 0.2 }], [352, -328, 16, 16, 0, { color: [0.6, 0.6, 0.6], opacity: 0 }],
@@ -856,31 +855,31 @@
 
       const F = $('features');
       segmented(F, {
-        label: 'line family',
-        title: 'stateless digital lines: lbal = unbiased (mean offset 0 at every level), lsym = the earlier rounding family',
-        options: [['lbal', 'lbal (unbiased)'], ['lsym', 'lsym']],
-        ...field(cfg, 'fam'),
-        url: ['fam', 'lbal'],
+        label: 'split rule',
+        title: 'how a ray of odd rise splits into halves (stateless digital rays): balanced = unbiased (mean offset 0 in every cascade), alternating = the earlier rule',
+        options: [['balanced', 'balanced (unbiased)'], ['alternating', 'alternating']],
+        ...field(cfg, 'splitRule'),
+        url: ['splitRule', 'balanced'],
       });
       toggle(F, {
-        label: 'stochastic transmittance',
-        title: 'a record\'s transmittance is the average over both roundings of its odd split (the expectation of a stochastically rounded path), each path also blocked by the corner cell its chord crosses where it steps a row; light stays on the line\'s own path. About half the penumbra error against square-pixel truth (Python tests), no extra memory (Python: brays_lean2 TBLEND=1 FAT=1)',
-        ...field(cfg, 'stochastic'),
-        enabled: () => !cfg.onepass,
-        url: ['stochastic', false],
+        label: 'stochastic rounding: averaged',
+        title: 'a ray\'s transmittance is the average over both roundings of its odd split (the expectation of a stochastically rounded path), each path also blocked by the corner cell its chord crosses where it steps a row; light stays on the ray\'s own path. About half the penumbra error against square-pixel truth, no extra memory',
+        ...field(cfg, 'averagedRounding'),
+        enabled: () => !cfg.onePass,
+        url: ['averagedRounding', false],
       });
       toggle(F, {
-        label: 'one-pass stochastic',
-        title: 'every odd split rounds either way with ½, independently per record, so records hold expectations (μ0, μ1, μ2, T); where a path steps a row it passes one of the two corner cells (its target\'s own column with probability 1 / (1 + |slope|)), which blocks both the transmittance and the light beyond. Splits, strips and the even nodes\' far terms mix both roundings; the shared prefix of neighbouring lines is a stored record of expected moments (+1 record per ray, 2× ray memory). Solid lights become opaque cells that emit (Python: stoch_onepass NOCOND=1 NOLAM=1 QC=match, GPU forms stoch5_gpu_forms.py); replaces stochastic transmittance',
-        ...field(cfg, 'onepass'),
-        url: ['onepass', false],
+        label: 'stochastic rounding: one-pass',
+        title: 'every odd split rounds either way with ½, independently per ray, so rays hold expectations (μ0, μ1, μ2, T); where a path steps a row it passes one of the two corner cells (its target\'s own column with probability 1 / (1 + |slope|)), which blocks both the transmittance and the light beyond. Splits, ray chains and the even apex columns\' beyond terms mix both roundings; the shared prefix of neighbouring rays is a stored ray of expected moments (+1 per ray, 2× ray memory). Opaque lights become opaque cells that emit; replaces averaged rounding',
+        ...field(cfg, 'onePass'),
+        url: ['onePass', false],
       });
       toggle(F, {
-        label: 'opaque-emission kernel',
-        title: 'one-pass: every atom counts an emitting cell\'s projected width, (|cos| + |sin|) / r, the kernel of an opaque emitter. Applied to all light, so it is right only for scenes whose lights are all solid (volume lights get up to 1.41× too much on diagonals); mixed scenes would need the solid share per record',
-        ...field(cfg, 'opaqueKernel'),
-        enabled: () => cfg.onepass,
-        url: ['opq', false],
+        label: 'opaque-light kernel',
+        title: 'one-pass: every point read counts an emitting cell\'s projected width, (|cos| + |sin|) / r, the kernel of an opaque emitter. Applied to all light, so it is right only for scenes whose lights are all opaque (volumetric lights get up to 1.41× too much on diagonals); mixed scenes would need the opaque share per ray',
+        ...field(cfg, 'opaqueLightKernel'),
+        enabled: () => cfg.onePass,
+        url: ['opaqueLightKernel', false],
       });
 
       const O = $('output');
@@ -1062,15 +1061,16 @@
         if (key === cascadeKey) return cascade;
         if (cascade) for (const v of Object.values(cascade)) if (v instanceof GPUBuffer) v.destroy();
         const N = cfg.N;
-        cascade = new MomentHRC(device, N, { abs: 'sec', f16: cfg.f16, fam: cfg.fam, stochastic: cfg.onepass ? 'onepass' : cfg.stochastic, opaqueKernel: cfg.opaqueKernel }); // abs: until the reference drops the point convention
+        cascade = new MomentHRC(device, N, { cellModel: 'square', halfFloatRays: cfg.halfFloatRays, splitRule: cfg.splitRule,
+          stochasticRounding: cfg.onePass ? 'onePass' : cfg.averagedRounding ? 'averaged' : 'off', opaqueLightKernel: cfg.opaqueLightKernel });
         cascadeKey = key;
         E = new Float32Array(N * N);
         A = new Float32Array(N * N);
         drawBG = device.createBindGroup({
           layout: drawPipe.getBindGroupLayout(0),
-          entries: [cascade.bufOut, cascade.bufA, cascade.bufE, drawU].map((buffer, binding) => ({ binding, resource: { buffer } })),
+          entries: [cascade.fluenceBuffer, cascade.transmittanceBuffer, cascade.emissionBuffer, drawU].map((buffer, binding) => ({ binding, resource: { buffer } })),
         });
-        const mb = (cascade.bufRays.size + cascade.bufCar.size) / 2 ** 20;
+        const mb = (cascade.rayBuffer.size + cascade.beyondSampleBuffer.size) / 2 ** 20;
         $('casc-info').textContent = `${N}² · ${mb.toFixed(0)} MB`;
         layout();
         return cascade;
@@ -1321,7 +1321,7 @@
           case 't': case 'T': {
             const r = await engine().profile(10);
             console.table(Object.entries(r).map(([stage, ms]) => ({ stage, ms: ms.toFixed(3) })));
-            console.log(`one frustum: ${Object.values(r).reduce((a, b) => a + b, 0).toFixed(2)} ms (×4 for a frame)`);
+            console.log(`one quadrant: ${Object.values(r).reduce((a, b) => a + b, 0).toFixed(2)} ms (×4 for a frame)`);
             break;
           }
           case 'ArrowRight': switchScene(currentScene + 1); changed(); break;
@@ -1416,7 +1416,7 @@
         touch();
       });
 
-      // debugging / headless hooks
+      // hooks for scripts
       window.momentHRC = { cfg, out, device, engine, touch, bench, stats: () => ({ cpuMs, gpuMs, solves, frameMs }), scene: () => ({ shapes, strokes, E, A }) };
 
       // ── Init ──

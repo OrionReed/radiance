@@ -35,7 +35,7 @@ function ceilDiv(n: number, d: number): number {
   return Math.ceil(n / d);
 }
 
-// Closed-form fluence kernel of a unit-square volumetric emitter (NOTES §47.1), float64 for the near-field taps.
+// Closed-form fluence kernel of a unit-square volumetric emitter, float64 for the near-field taps.
 function kernelClosed(x: number, y: number): number {
   const G = (u: number, v: number) => {
     const r = Math.hypot(u, v);
@@ -43,14 +43,14 @@ function kernelClosed(x: number, y: number): number {
   };
   return G(x + 0.5, y + 0.5) - G(x - 0.5, y + 0.5) - G(x + 0.5, y - 0.5) + G(x - 0.5, y - 0.5);
 }
-// Near-field tap table (E77b). Far field: 2× tent splat (per axis pixel 2c → c:¾, c−1:¼; 2c+1 → c:¾, c+1:¼),
+// Near-field tap table. Far field: 2× tent splat (per axis pixel 2c → c:¾, c−1:¼; 2c+1 → c:¾, c+1:¼),
 // coarse kernel Kc(dc) = (K_far − σ²/2·∇²K)(2dc)·w_dir(2dc)·cut(|2dc|), bilinear gather at (p+½)/2−½. For receiver
 // phase φ = p mod 2 and offset d (|d|∞ ≤ W) the near weight per direction is K(d)·w_dir(d) minus the coarse path's
 // contribution for the emitter p + d. Entries (dx, dy, weight, dir) grouped by phase; returns offsets and counts.
 const NEAR_R = 6;
 const NEAR_RHO = 0.5;
 const NEAR_SIG2 = 1.5;
-const NEAR_TOL = 1e-2; // relative to K(d); E77b
+const NEAR_TOL = 1e-2; // relative to K(d)
 function quadrantWeightsJS(dx: number, dy: number): number[] {
   if (dx === 0 && dy === 0) return [0.25, 0.25, 0.25, 0.25];
   const ax = Math.abs(dx), ay = Math.abs(dy);
@@ -266,8 +266,8 @@ fn unpackRGB9E5(p: u32) -> vec3f {
 // ── Cascade channel modes ──
 // The cascade shaders are written against an abstract radiance type `Rad` so
 // the same transport code runs in two modes:
-//   rgb  — Rad = vec3f. Rays: 4×f16 (8 B). Merge/fluence: RGB9E5 (4 B).
-//   mono — Rad = f32 (luminance). Rays: 2×f16 (4 B). Merge/fluence: f32 (4 B).
+//   rgb:  Rad = vec3f. Rays: 4×f16 (8 B). Merge/fluence: RGB9E5 (4 B).
+//   mono: Rad = f32 (luminance). Rays: 2×f16 (4 B). Merge/fluence: f32 (4 B).
 // Transport is linear per channel with scalar transmittance, so a mono cascade
 // computes exactly dot(LUMA, rgb cascade) up to quantization.
 
@@ -312,8 +312,8 @@ const RAY_BYTES: Record<ChannelMode, number> = { rgb: 8, mono: 4 };
 // ── World-render shaders (shapes, lines, mouse light → world + material) ──
 //
 // Two render targets (MRT):
-//   location(0) = world    — rgb: emitted radiance, a: opacity (0–1)
-//   location(1) = material — r: albedo (0–1)
+//   location(0) = world:    rgb emitted radiance, a opacity (0–1)
+//   location(1) = material: r albedo (0–1)
 //
 // Opacity is the per-pixel extinction: fraction of light absorbed or scattered
 // per unit traversal. opacity=1 is a fully opaque solid, opacity=0 is vacuum.
@@ -408,7 +408,7 @@ struct FragOut { @location(0) world: vec4f, @location(1) material: vec4f }
 }
 `;
 
-// ── HRC Phase A: Ray Seed — direct tracing of T_0 and T_1 (paper §4.2, Alg. 1) ──
+// ── HRC Phase A: Ray Seed, direct tracing of T_0 and T_1 (paper §4.2, Alg. 1) ──
 // Samples world + bounce textures at each probe position. Computes per-cell
 // radiance and transmittance using discrete Beer-Lambert: T = (1−α)^spacing.
 // Emission is multiplied by (1 - T) because emission and absorption are coupled
@@ -475,7 +475,7 @@ const raySeedShader = (mode: ChannelMode, level: number) => {
       lines.push('    { var acc = vec4f(0.0, 0.0, 0.0, 1.0); var t = 0.0;');
       for (const [a, b, len] of c) {
         const v = name(a, b);
-        // Volumetric emitters (opacity 0): emission ∝ chord length (NOTES §44/§47); otherwise first-hit emission E·(1 − t).
+        // Volumetric emitters (opacity 0): emission ∝ chord length; otherwise first-hit emission E·(1 − t).
         lines.push(`      { let L = ${len.toFixed(9)} * params.probeSpacing; t = pow(${v}.a, L); acc = vec4f(acc.rgb + acc.a * ${v}.rgb * select(1.0 - t, L, ${v}.a > 0.99999), acc.a * t); }`);
       }
       lines.push('      sum += acc; }');
@@ -515,7 +515,7 @@ fn cellEB(c: vec2i) -> vec4f {
   let world = textureLoad(worldTex, px, 0);
   let bdim = vec2i(textureDimensions(bounceTex, 0));
   let bounce = textureLoad(bounceTex, clamp(vec2i(wp / vec2f(params.screenW, params.screenH) * vec2f(bdim)), vec2i(0), bdim - 1), 0).rgb;
-  // freeWorld: the same emitters with every cell transparent (the ratio's free channel, NOTES §47); emission per
+  // freeWorld: the same emitters with every cell transparent (the ratio's free channel); emission per
   // unit length E (volumetric light) or E·α (medium), matching the scene cascade's E·(1 − t) to first order
   if (params.freeWorld == 1u) {
     return vec4f(world.rgb * select(world.a, 1.0, world.a < 1e-6) + bounce, 1.0);
@@ -537,7 +537,7 @@ ${body.join('\n')}
   );
 };
 
-// ── HRC Phase B: Ray Extension — "Merge Up", building T_1..T_N (paper §4.1) ──
+// ── HRC Phase B: Ray Extension ("Merge Up"), building T_1..T_N (paper §4.1) ──
 // Composes two shorter rays from the previous level into one longer ray.
 // Even k: exact composition via Eq. 18: T_{n+1}(p,2k) = Merge(T_n(p,k), T_n(p+v_n(k),k))
 // Odd k: averaged cross-composition via Eq. 19-20, interpolating between the
@@ -553,7 +553,7 @@ struct ExtendParams {
   probeCount: u32,
   level: u32,
   sliceCount: u32,
-  // equal footprints (research/tree/notes/merge_read_mechanism.md §7, §10): lateral tap [t, 1-2t, t] on the emission of interior
+  // equal footprints: lateral tap [t, 1-2t, t] on the emission of interior
   // parent rays, one for even and one for odd parents (0 = production; negative = sharpen)
   equalTap: f32,
   equalTapOdd: f32,
@@ -599,7 +599,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let farA = loadPrev(p0 + 1, h, sliceIdx + offA);
   var even = compositeRay(a, farA);
   if (params.equalTap > 0.0 && h > 0 && h < half) {
-    // blur the children's radiance across slices (transmittance from the own slice), as research/tree/lab/backport_gain.extension
+    // blur the children's radiance across slices (transmittance from the own slice)
     let t = select(params.equalTap, params.equalTapAxis, 2 * h == half);
     let nr = (1.0 - 2.0 * t) * a.rad + t * (loadPrev(p0, h, sliceIdx - 1).rad + loadPrev(p0, h, sliceIdx + 1).rad);
     let fr = (1.0 - 2.0 * t) * farA.rad + t * (loadPrev(p0 + 1, h, sliceIdx + offA - 1).rad + loadPrev(p0 + 1, h, sliceIdx + offA + 1).rad);
@@ -629,16 +629,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-// ── HRC Phase C: Cascade Merge — "Merge Down", computing R_{N-1}..R_0 (paper §4.2) ──
+// ── HRC Phase C: Cascade Merge ("Merge Down"), computing R_{N-1}..R_0 (paper §4.2) ──
 // Reads pre-computed ray data and merges with far-field fluence from higher levels.
 // Parity-dependent cascade connection:
 //   Odd probes (Eq. 14): Merge_r(A_{n+1}(j) × Trace(p,q), R_{n+1}(q,j))
 //   Even probes (Eq. 15-17): Richardson-average of local composite with
 //     coarser level's result to cancel first-order spatial interpolation error.
 
-// One invocation per cone pair (2w, 2w+1) at levels ≥ 1 — the pair's rays are 2w, 2w+1, 2w+2 and the
-// middle one (and, for even probes, its extension) is shared — and one per probe at level 0.
-// Merge-side read (research/tree/notes/merge_footprints.md): a sub-bin's near radiance is a stencil over the rays of the same probe
+// One invocation per cone pair (2w, 2w+1) at levels ≥ 1, and one per probe at level 0. A pair's rays are 2w, 2w+1, 2w+2,
+// the middle one (and, for even probes, its extension) shared.
+// Merge-side read: a sub-bin's near radiance is a stencil over the rays of the same probe
 // from slices s-1..s+1 (rows, nd = 3) and neighbouring ray indices (slopes: noo offsets for odd probes at level n, noe for even
 // probes' own chain at level n+1), each ray with its own gated radiance; the far term keeps the centre ray's transmittance.
 // Weights per (level, branch, sub-bin) as 3 slices x 5 ray offsets. One workgroup = 64 slices of one (probe, cone pair): the
@@ -651,7 +651,7 @@ interface MergeReadShape {
   param?: boolean; // rows read with weights computed from per-level constants (any depth; no table loads)
   constW?: boolean; // timing only: constant weights instead of the table (isolates the ray loads)
   sg?: boolean; // slice neighbours by subgroup shuffles (needs the 'subgroups' feature); edge lanes load directly
-  parity?: 'wg' | 'direct' | 'sg' | 'halo' | 'none' | 'sghalo'; // the derived parity read (neighbours via workgroup memory, direct loads or subgroup shuffles) (research/tree/notes/focus_and_extension.md §13–14): weights from kappa, no table
+  parity?: 'wg' | 'direct' | 'sg' | 'halo' | 'none' | 'sghalo'; // the derived parity read (neighbours via workgroup memory, direct loads or subgroup shuffles): weights from kappa, no table
 }
 const MERGE_READ_SHAPES: Record<number, MergeReadShape> = {
   1: { nd: 3, noo: 1, noe: 1 },
@@ -673,7 +673,7 @@ const MERGE_READ_SHAPES: Record<number, MergeReadShape> = {
   21: { nd: 3, noo: 1, noe: 1, sg: true },
   23: { nd: 3, noo: 3, noe: 5, sg: true },
 };
-// fitted on the research training scenes (research/tree/lab/read_param.py); entries [aEdge, aInt, dEdge, dInt, R]
+// fitted on a set of training scenes; entries [aEdge, aInt, dEdge, dInt, R]
 const MERGE_READ_PARAMS: Record<string, { o: number[]; e: number[] }> = {};
 const mergeReadDecls = (r: MergeReadShape) => {
   const HD = (r.nd - 1) / 2,
@@ -1147,7 +1147,7 @@ fn ${read ? 'mainProduction' : 'main'}(@builtin(global_invocation_id) gid: vec3u
   let ext1 = extOf(probeIdx, b0 + 1, sliceIdx, isEven, numDirections);
   let ext2 = extOf(probeIdx, b0 + 2, sliceIdx, isEven, numDirections);
   let s0 = u32(2 * b0);
-  // Quadrant-edge drain (research/tree/notes/merge_read_mechanism.md §7): the sub-bin next to each quadrant edge (1 and 2L-2) reads
+  // Quadrant-edge drain: the sub-bin next to each quadrant edge (1 and 2L-2) reads
   // its ray edgeShift rows inward. Only the first and last pair's workgroups take the branch (uniform per workgroup).
   var ray1a = ray1;
   var ext1a = ext1;
@@ -1181,7 +1181,7 @@ fn ${read ? 'mainProduction' : 'main'}(@builtin(global_invocation_id) gid: vec3u
 // Uses world texture alpha (opacity) to mask indirect light at surfaces.
 
 const blitShader = /*wgsl*/ `
-struct BlitParams { exposure: f32, screenW: f32, screenH: f32, debugMode: f32, falseColor: f32, banded: f32, pad1: f32, pad2: f32 };
+struct BlitParams { exposure: f32, screenW: f32, screenH: f32, debugMode: f32, falseColor: f32, banded: f32, errorClip: f32, pad2: f32 };
 const TWO_PI = 6.2831853;
 
 fn acesTonemap(x: vec3f) -> vec3f {
@@ -1252,20 +1252,30 @@ fn viridis(t: f32) -> vec3f {
     hdr = ptRad;
     fcSource = ptRad;
   } else if (dm == 2) {
-    let ptRad = textureLoad(ptAccumTex, vec2i(pos.xy), 0).rgb;
-    hdr = abs((emissive + indirect) - ptRad);
-    fcSource = hdr;
-    forceFc = true;
+    // the error against the reference, (HRC − reference) / reference in displayed luminance (L · exposure, the reference
+    // floored at 0.01), on a log scale in bands of 0.1 decade: white at 1e-5 or less, darkest at 1; reds where HRC is
+    // brighter, blues where darker (ColorBrewer RdBu, sRGB)
+    if (world.a > 0.5) { return vec4f(1.0); }   // solids: white
+    let w = vec3f(0.2126, 0.7152, 0.0722);
+    let h = dot(emissive + indirect, w) * params.exposure;
+    let r = dot(textureLoad(ptAccumTex, vec2i(pos.xy), 0).rgb, w) * params.exposure;
+    let e = (h - r) / max(r, 0.01);
+    if (abs(e) >= params.errorClip) { return vec4f(0.85, 0.2, 0.78, 1.0); }   // at least the clip the legend sets: magenta
+    let m = 3.0 * clamp((floor(log2(max(abs(e), 1e-9)) * 0.30103 * 10.0) / 10.0 + 5.0) / 5.0, 0.0, 1.0);
+    var stops = array<vec3f, 4>(vec3f(1.0), vec3f(0.957, 0.647, 0.510), vec3f(0.839, 0.376, 0.302), vec3f(0.404, 0.0, 0.122));
+    if (e < 0.0) { stops = array<vec3f, 4>(vec3f(1.0), vec3f(0.573, 0.773, 0.871), vec3f(0.263, 0.576, 0.765), vec3f(0.020, 0.188, 0.380)); }
+    let i = min(u32(m), 2u);
+    return vec4f(mix(stops[i], stops[i + 1u], m - f32(i)), 1.0);
   } else {
     hdr = emissive + indirect;
     fcSource = fluence;
   }
 
-  // banded: log10(L · exposure) in 22 bands of 0.1 decade over [-2.2, 0] (research/tree/lab/parity_figs.py banded);
-  // opaque cells black, emitters red. In the diff view the bands are of |HRC − PT|.
+  // banded: log10(L · exposure) in 22 bands of 0.1 decade over [-2.2, 0];
+  // opaque cells black, emitters red.
   if (params.banded > 0.5) {
-    if (world.a > 0.5 && dm != 2) { return vec4f(0.0, 0.0, 0.0, 1.0); }
-    if (dot(world.rgb, vec3f(1.0)) > 0.0 && dm != 2) { return vec4f(1.0, 0.15, 0.1, 1.0); }
+    if (world.a > 0.5) { return vec4f(0.0, 0.0, 0.0, 1.0); }
+    if (dot(world.rgb, vec3f(1.0)) > 0.0) { return vec4f(1.0, 0.15, 0.1, 1.0); }
     let src = select(fluence / TWO_PI, hdr, dm != 0);
     let lum = dot(src, vec3f(0.2126, 0.7152, 0.0722)) * params.exposure;
     let band = clamp(floor((log2(max(lum, 1e-12)) * 0.30103 + 2.2) * 10.0), 0.0, 21.0);
@@ -1360,10 +1370,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 `;
 
 
-// ── Ratio (tier 1, NOTES §44–§47): exact free-space transport × cascade visibility ──
+// ── Ratio: exact free-space transport × cascade visibility ──
 //
 // F(p) = Σ_dir F_free,dir(p) · blur(F_occ,dir)(p) / blur(F_freeH,dir)(p)
-//   F_free,dir  exact unoccluded fluence from the direction's 90° quadrant (closed-form kernel, §47.1)
+//   F_free,dir  exact unoccluded fluence from the direction's 90° quadrant (closed-form kernel)
 //   F_occ,dir   the cascade on the scene              (per-direction level-0 fluence)
 //   F_freeH,dir the cascade on the scene with every cell transparent
 // Light model: volumetric emitters (opacity 0, emission per unit length). Opaque emitters are seen
@@ -1394,7 +1404,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-// Closed-form fluence kernel of a unit-square volumetric emitter (NOTES §47.1), with a multipole far field
+// Closed-form fluence kernel of a unit-square volumetric emitter, with a multipole far field
 // (1/r + 1/(24 r³)) beyond 8 px where the closed form cancels catastrophically in f32.
 const wgslFreeKernel = /*wgsl*/ `
 fn kG(u: f32, v: f32) -> f32 {
@@ -1425,7 +1435,7 @@ fn quadrantWeights(dx: i32, dy: i32) -> vec4f {
 }
 `;
 
-// Direct-sum free field (prototype, O(pixels × emitters) — scene dependent; the FFT path replaces it).
+// Direct-sum free field: O(pixels × emitters), so scene dependent; a check on the FFT path.
 const freeFieldDirectShader = (mode: ChannelMode) =>
   wgslChannel[mode] +
   wgslFreeKernel +
@@ -1459,7 +1469,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 // ── FFT free field (scene-independent cost): F_dir = E ∗ Kc_dir on a 2× zero-padded grid ──
 // One workgroup transforms one row (axis 0) or column (axis 1) of the P×P complex grid in workgroup memory.
 // mode 0: copy src; 1: load the emission image (pack 0 → (r, g), pack 1 → (b, 0)); 2: src × kernel spectrum of
-// direction `dir` (E = K̂, W = conj K̂, N = K̂ᵀ, S = conj K̂ᵀ — the quadrant kernels are reflections of one another);
+// direction `dir` (E = K̂, W = conj K̂, N = K̂ᵀ, S = conj K̂ᵀ: the quadrant kernels are reflections of one another);
 // 3: load the East convolution kernel image. `inverse` flips the twiddle sign; `scale` is applied on store.
 const fftShader = (P: number) => {
   const logP = Math.log2(P);
@@ -1566,12 +1576,12 @@ fn main(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: ve
   );
 };
 
-// Transport world for the ratio (NOTES §50.2, §51): an opaque emitter becomes a volumetric body of the same total
-// emission — emission per unit length ρ = E·P/(πA) (Cauchy: mean chord = πA/P), with P/A = 2(1/c_x + 1/c_y) from the
-// body's horizontal and vertical run lengths through the pixel (exact for rectangles, close for discs) — so the scene
-// cascade, the free channel, the exact free field and the path tracer see one convolution-compatible model. The
-// earlier 1-px shell was wrong (3× too bright, and its rim rows are "light tubes" for the line lattice). Display
-// keeps the original world. Bodies no longer block light (model error of this proxy, ±17 % angular, §50.2).
+// Transport world for the ratio: an opaque emitter becomes a volumetric body of the same total
+// emission: emission per unit length ρ = E·P/(πA) (Cauchy: mean chord = πA/P), with P/A = 2(1/c_x + 1/c_y) from the
+// body's horizontal and vertical run lengths through the pixel (exact for rectangles, close for discs), so the scene
+// cascade, the free channel, the exact free field and the path tracer see one convolution-compatible model (a 1-px
+// shell is 3× too bright, and its rim rows act as light tubes for the line lattice). Display keeps the original
+// world. Bodies do not block light: the proxy's model error, ±17 % in angle.
 const transportWorldShader = /*wgsl*/ `
 @group(0) @binding(0) var worldTex: texture_2d<f32>;
 @group(0) @binding(1) var dst: texture_storage_2d<rgba16float, write>;
@@ -1630,7 +1640,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-// Near field (E77b): per receiver phase (p mod 2), tap weights = exact K·w_dir − what the coarse far path (tent
+// Near field: per receiver phase (p mod 2), tap weights = exact K·w_dir − what the coarse far path (tent
 // splat → coarse kernel → bilinear gather) already contributes for that emitter, so near + far is exact inside the
 // window. One dispatch per phase: a workgroup covers 8×8 same-phase receivers (a 16×16 fine block) and stages the
 // block plus apron of the emission image in workgroup memory (f16 rgb).
@@ -1646,7 +1656,7 @@ struct NearParams { probesX: u32, probesY: u32, stride: u32, phase: u32, tapBase
 @group(0) @binding(3) var<uniform> params: NearParams;
 
 // One dispatch per receiver phase; a thread handles one receiver (fine pixel 2·gid + phase). Plain texture loads:
-// a workgroup-memory tile was tried and lost (occupancy), see NOTES §48.6.
+// a workgroup-memory tile is slower (occupancy).
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dim = vec2i(i32(params.probesX), i32(params.probesY));
@@ -1758,7 +1768,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     nums[dir] = num / wt; dens[dir] = den / wt; numT += nums[dir]; denT += dens[dir];
   }
   // total visibility: the fallback for a quadrant the cascade sees as (nearly) dark, where the coarse far
-  // field's quadrant split may still have put a little energy (NOTES §48.6)
+  // field's quadrant split may still have put a little energy
   let vT = select(vec3f(0.0), numT / max(denT, vec3f(1e-7)), denT > vec3f(1e-7));
   for (var dir = 0; dir < 4; dir++) {
     let num = nums[dir];
@@ -1862,7 +1872,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 // each cell. This eliminates the directional bias of unit-step marching
 // where diagonal rays traversed more cells than axis-aligned ones.
 //
-// Transport model — deterministic emission + stochastic interaction:
+// Transport model: deterministic emission, stochastic interaction.
 //   At each pixel:
 //     1. Deterministic emission: radiance += throughput × emission × interactProb
 //        where interactProb = 1 − pow(1−opacity, pathLen)
@@ -2049,7 +2059,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 // the pixel centre along the DDA chord model (the same rule as pathTraceShader with maxBounces 0). The angle is
 // sampled uniformly at M directions; each interval [θk, θk+1] is integrated by the trapezoid rule, and where the two
 // rays end on different cells AND their radiance jumps (> 1 %), the jump is located by bisection (depth steps) and both
-// sides are integrated separately: the research reference's rule (research/rc-theory/e64_volumetric.py ref_vol_sector).
+// sides are integrated separately.
 // Work is split into chunks of C consecutive intervals visited in a scrambled order and into row bands, so each
 // dispatch is short and the partial image (rescaled by intervals done) refines in place.
 const exactShader = /*wgsl*/ `
@@ -2282,6 +2292,8 @@ export class HRC {
   probeCount = 1024;
   bounces = true;
   debugMode = 0;
+  /** Error views: errors of at least this show magenta. */
+  errorClip = 1e9;
   falseColor = false;
   // Banded display: log10 fluence × exposure in 10 bands per decade over [-2.2, 0], viridis (overrides falseColor).
   banded = false;
@@ -2289,33 +2301,33 @@ export class HRC {
   // Color resolution relative to probe resolution. Below 1, luminance is
   // computed at full probe resolution and color at this scale.
   colorScale = 1;
-  // Tier-1 ratio (NOTES §44–§47): exact free-space transport × cascade visibility. Full-colour mode only.
+  // Ratio: exact free-space transport × cascade visibility. Full-colour mode only.
   ratio = false;
   // Ratio debug view: 0 = result, 1 = exact free field, 2 = visibility, 3 = plain HRC (same run), 4 = cascade free estimate
   ratioView = 0;
   // Free-field method: 'fft' (exact, scene-independent cost) or 'direct' (sum over emitters; validation stand-in).
   freeMethod: 'fft' | 'direct' = 'fft';
-  // Merge-side read (research/tree/notes/merge_footprints.md): 0 = production merge; 1 rows, 2 slopes, 3 both (weights: setMergeReadWeights).
+  // Merge-side read: 0 = production merge; 1 rows, 2 slopes, 3 both (weights: setMergeReadWeights).
   mergeRead = 0;
-  // Parity read (merge-read 5, research/tree/notes/focus_and_extension.md §13–14): kappa per level (index 0 = finest; the last
+  // Parity read (merge-read 5): kappa per level (index 0 = finest; the last
   // entry repeats for deeper levels) and the shift of the sub-bin next to the quadrant edge (levels >= 1).
-  parityKappa: number[] = [0, 0, 0, 0.16, 0.21, 0.24]; // research/tree/lab/kappa_levels.py
+  parityKappa: number[] = [0, 0, 0, 0.16, 0.21, 0.24];
   parityEdge = 0.25;
   // Use the parity read (overrides mergeRead): subgroup halo variant (merge-read 10) where subgroups are 32 wide, else 8.
   parityRead = false;
-  // Equal footprints (research/tree/notes/merge_read_mechanism.md §7): even-ray emission blur in the extension (tap .16) plus the
+  // Equal footprints: even-ray emission blur in the extension (tap .16) plus the
   // merge's quadrant-edge drain (.4 rows, the parity read with kappa 0). Derived, no fitting.
   equalise = false;
-  // Per-level taps for equalise (index = parent level; null = uniform .16 on even rays). F1 of §10: even +.08, odd -.04..-.08.
+  // Per-level taps for equalise (index = parent level; null = uniform .16 on even rays). Even +.08, odd -.04..-.08.
   equalTaps: { even: number[]; odd: number[] } | null = null;
   // Per-level quadrant-edge drain for equalise (index = level; null = .4 at every level >= 1).
-  // Derived per level on a free light at 512^2 (research/tree/lab/edge_levels.py): the drain that zeroes diagonal-minus-rest in each
+  // Derived per level on a free light at 512^2: the drain that zeroes diagonal-minus-rest in each
   // level's distance band.
   equalEdge: number[] | null = [0, 0.4, 0.352, 0.433, 0.44, 0.44, 0.417, 0.33];
   // Per-level tap for the axis ray under equalise (index = parent level; null = the even tap); derived like the drain.
   equalAxis: number[] | null = [0, 0, 0.032, 0.08, 0.141, 0.14, 0.12, 0.102, 0.102, 0.102, 0.102];
-  // Weight of the coarser datum in the even probes' merge (HRC: 1/2). 0.55 lowers error on every scene of the research suite
-  // (research/tree/notes/read_implications.md §9); evenWeights, when set, gives one weight per level (index 0 = finest).
+  // Weight of the coarser datum in the even probes' merge (HRC: 1/2). 0.55 lowered error on every scene tested;
+  // evenWeights, when set, gives one weight per level (index 0 = finest).
   evenWeight = 0.5;
   evenWeights: number[] | null = null;
   // Constants of the compact rows read (merge-read 4) per level class: '0'..'3' and 'int' (levels 4 .. top-1); the top level keeps
@@ -3499,7 +3511,7 @@ export class HRC {
     const extPS = this.#extendParamsView.arrayBuffer.byteLength;
     const mergePS = this.#mergeParamsView.arrayBuffer.byteLength;
 
-    // seed bind groups per (direction, level ∈ {0, 1}) — slot dir * 2 + level
+    // seed bind groups per (direction, level ∈ {0, 1}), slot dir * 2 + level
     const seedWorld = c.fluenceDirs === 4 ? this.#transportTextureView : this.#worldTextureView;
     c.seedBindGroups = [0, 1, 2, 3].flatMap((dir) =>
       [0, 1].map((level) =>
@@ -3600,7 +3612,7 @@ export class HRC {
     );
   }
 
-  // The FFT pass list (NOTES §47): forward (emission → specA, specB), then per direction and pack an inverse with the
+  // The FFT pass list: forward (emission → specA, specB), then per direction and pack an inverse with the
   // kernel multiply fused into its row pass, gathered into the packed free field. Params live in 256-B slots.
   #createFFTPasses(occ: Cascade) {
     const device = this.#device;
@@ -4018,7 +4030,7 @@ export class HRC {
       debugMode: this.debugMode >= 3 ? this.debugMode - 2 : this.debugMode, // 3, 4: exact reference in place of PT
       falseColor: this.falseColor ? 1.0 : 0.0,
       banded: this.banded ? 1.0 : 0.0,
-      pad1: 0,
+      errorClip: this.errorClip,
       pad2: 0,
     });
     device.queue.writeBuffer(this.#blitParamsBuffer, 0, this.#blitParamsView.arrayBuffer);
@@ -4168,7 +4180,7 @@ export class HRC {
     this.#readTimestamps();
   }
 
-  // Tier 1 (NOTES §47): the cascade twice (scene, transparent scene), the exact free field, then the combine pass.
+  // Ratio: the cascade twice (scene, transparent scene), the exact free field, then the combine pass.
   #runRatio(encoder: GPUCommandEncoder, width: number, height: number) {
     const occ = this.#cascades[0];
     const free = this.#freeCascade!;
@@ -4242,7 +4254,7 @@ export class HRC {
     const cfg = dir & 1;
 
     // Every pass walks slices (64-wide workgroups along x) over the slice-fastest buffers.
-    // Phase A: Seed — trace T_0 and T_1 directly as strips (paper §4.2, Alg. 1 line 3), one invocation per probe
+    // Phase A, seed: trace T_0 and T_1 directly as strips (paper §4.2, Alg. 1 line 3), one invocation per probe
     const seedLevels = nc > 1 ? 2 : 1;
     {
       const pass = encoder.beginComputePass({ timestampWrites: this.#tsPass(`${dn}-seed${tag}`) });
@@ -4254,7 +4266,7 @@ export class HRC {
       pass.end();
     }
 
-    // Phase B: Extend / "Merge Up" — build T_2..T_{N-1} bottom-up (Eq. 18, 20), one invocation per ray pair
+    // Phase B, extension ("Merge Up"): build T_2..T_{N-1} bottom-up (Eq. 18, 20), one invocation per ray pair
     {
       const pass = encoder.beginComputePass({ timestampWrites: this.#tsPass(`${dn}-extend${tag}`) });
       pass.setPipeline(pipes.extend);
@@ -4265,7 +4277,7 @@ export class HRC {
       pass.end();
     }
 
-    // Phase C: "Merge Down" — resolve R_{N-1}..R_0 top-down (Eq. 14-15), write fluence at level 0;
+    // Phase C, merge ("Merge Down"): resolve R_{N-1}..R_0 top-down (Eq. 14-15), write fluence at level 0;
     // one invocation per cone pair (per probe at level 0)
     {
       const pass = encoder.beginComputePass({ timestampWrites: this.#tsPass(`${dn}-merge${tag}`) });
@@ -4376,7 +4388,7 @@ export class HRC {
     const { probesX, probesY } = c;
     const nc = c.numCascades;
 
-    // Seed params: per direction (4) — includes transform matrix
+    // Seed params: per direction (4), with the transform matrix
     for (let dir = 0; dir < 4; dir++) {
       const pc = dir & 1 ? probesY : probesX;
       const sc = dir & 1 ? probesX : probesY;
@@ -4420,7 +4432,7 @@ export class HRC {
   }
 
   // Merge params: per direction (4) × per level (also re-uploaded when the merge's weights change)
-  // Extend params: per frustum config (2) — E/W share (probesX, probesY), N/S share (probesY, probesX)
+  // Extend params: per direction pair (2); E/W share (probesX, probesY), N/S share (probesY, probesX)
   #uploadExtendParams(c: Cascade) {
     const device = this.#device;
     const { probesX, probesY } = c;

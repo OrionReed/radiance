@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Polygonal HRC</title>
     <meta name="description" content="Polygonal HRC with visibility via occluder silhouettes" />
+    <meta name="order" content="3" />
     <style>
       *,
       *::before,
@@ -394,6 +395,56 @@
       #view.grabbing {
         cursor: grabbing;
       }
+      /* the scene lock's colour: the outline around the locked square and the selected reference */
+      :root {
+        --lock: #d4665a;
+      }
+      .reference .seg button.on {
+        background: var(--lock);
+        color: #fff;
+      }
+      /* two toggles side by side */
+      .pair {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0 12px;
+        margin-top: 10px;
+      }
+      .pair .field {
+        margin-top: 0;
+      }
+      /* the error legend's bar: drag to mark errors above a size in magenta */
+      #legend .bar.error {
+        position: relative;
+        cursor: ew-resize;
+        touch-action: none;
+      }
+      #legend .bar.error i {
+        position: absolute;
+        top: -2px;
+        bottom: -2px;
+        width: 2px;
+        margin-left: -1px;
+        background: var(--text);
+        border-radius: 1px;
+      }
+      /* the scene locks while a reference is shown: no drawing or editing, and an outline around the square */
+      body.locked #pen {
+        opacity: 0.4;
+        pointer-events: none;
+      }
+      body.locked #view {
+        outline: 2px solid var(--lock);
+        outline-offset: 3px;
+        cursor: default;
+      }
+      #selection {
+        position: absolute;
+        display: none;
+        border: 1px solid rgba(255, 255, 255, 0.85);
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+        pointer-events: none;
+      }
       #error {
         position: absolute;
         inset: 0;
@@ -421,18 +472,26 @@
         <h2><span id="pen-title">pen</span> <small id="pen-sub">draw on the canvas</small></h2>
         <div id="pen-fields"></div>
         <div id="size-field"></div>
-        <div class="hint">solid light = opaque and glowing · wall = opaque · everything takes whole cells · drag a shape to move it · the cursor previews the pen</div>
+        <div class="hint">light = solid and glowing · solid = dark · drag a shape to move it · the cursor previews the pen</div>
       </section>
     </aside>
 
     <div id="canvas-area">
       <canvas id="view"></canvas>
       <canvas id="overlay"></canvas>
+      <div id="selection"></div>
       <div id="help"></div>
       <div id="error"></div>
     </div>
 
     <aside id="right">
+      <section>
+        <h2>visibility</h2>
+        <div id="visibility"></div>
+        <div class="hint">Corner runs: each cone tile keeps up to three occluder silhouettes, blocked directions bounded by two whole
+          pixels, with their light. Off: each tile keeps only its transmittance (unblocked share of its directions) and its mean
+          light; extension and merge multiply these averages.</div>
+      </section>
       <section>
         <h2>occluder silhouettes</h2>
         <div id="silhouettes"></div>
@@ -456,6 +515,8 @@
       // Polygonal HRC: interactive page. Scenes are plain data (rectangles in scene units), rasterised on the CPU
       // into emission E and transmittance A (opaque: A = 0).
       import { PolygonalHRC } from './polygonal-hrc.js';
+      import { scenesFor, SPAN } from '../_shared/scenes';
+      import { Reference } from '../_shared/reference';
 
       const $ = (id) => document.getElementById(id);
       const el = (tag, props = {}, ...children) => {
@@ -468,15 +529,21 @@
       // ════════════════════════════════════════════════════════════════════
       // State. cfg rebuilds the cascade when it changes; out only redraws.
       // ════════════════════════════════════════════════════════════════════
-      const cfg = { N: 256 };
-      const out = { view: 'fluence', map: 'tone', exposure: 2, dither: true };
+      const cfg = { N: 256, runs: true };
+      const out = { map: 'srgb', exposure: 1, dither: true, scene: false };
+      // reference view: 0 none (the scheme itself), 1 path trace, 2 exact, 3 error against the path trace, 4 against exact.
+      // The scene locks while one is shown.
+      let refMode = 0, refDensity = 64, reference = null, drawnVersion = -1, errorClip = 0;   // errorClip: exponent, 0 off
+      const locked = () => refMode !== 0;
+      const pathTracing = () => refMode === 1 || refMode === 3;
+
       const silhouetteView = { on: false, L: 16 };   // the occluder-silhouette overlay
       let apex = null, overlayDirty = false;   // the overlay's apex: scene corner (y up), snapped to multiples of L
       let dirty = true, redraw = true;
       const touch = () => (dirty = true);
 
       // ════════════════════════════════════════════════════════════════════
-      // Controls (as moment-hrc.html): a toggle is an on/off; a segmented control picks one of several.
+      // Controls (as on the Digital HRC page): a toggle is an on/off; a segmented control picks one of several.
       // Each spec: { label, get(), set(v), enabled?(), key?, title?, url?: [name, default] }.
       // ════════════════════════════════════════════════════════════════════
       const controls = [];
@@ -549,58 +616,22 @@
       }
 
       // ════════════════════════════════════════════════════════════════════
-      // Scenes: a registry. Coordinates are scene units with the origin at the square's centre and 1024 units across,
-      // independent of N. A shape is { x, y, w, h, b } (top-left, y down; b = radiance, 0 for a wall). Every shape is opaque.
-      // The test scenes are drawn on a 64-cell grid (16 units a cell).
+      // Scenes: the shared set (site/_shared/scenes.ts), those with only solids. A shape here is { x, y, w, h, b } in scene
+      // units (top-left, y down; b = radiance, 0 for a wall). Tests impose their resolution while they are shown.
       // ════════════════════════════════════════════════════════════════════
-      const SPAN = 1024, U = SPAN / 64;
       let shapes = [], strokes = [];
-      const scenes = [];
-      const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-      const scene = (group, name, list) => scenes.push({ id: slug(name), group, name, list });
-      const rng = (seed) => () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
-      // a block of 64-grid cells [x0, x1) × [y0, y1), rows y up
-      const cells = (x0, x1, y0, y1, b) => [(x0 - 32) * U, (32 - y1) * U, (x1 - x0) * U, (y1 - y0) * U, b];
-      const SLIT_LIGHT = cells(10, 12, 31, 33, 1);
-
-      scene('test scenes', 'Solid 2×2', [cells(31, 33, 31, 33, 1)]);
-      scene('test scenes', 'Solid 10×10', [cells(27, 37, 27, 37, 1)]);
-      scene('test scenes', 'Rect 7×3', [cells(28, 35, 31, 34, 1)]);
-      scene('test scenes', 'Blob', (() => {
-        const r = rng(5), m = new Set(['32,32']);
-        while (m.size < 61) {
-          const [x, y] = [...m][Math.floor(r() * m.size)].split(',').map(Number), d = [[1, 0], [-1, 0], [0, 1], [0, -1]][Math.floor(r() * 4)];
-          m.add(`${x + d[0]},${y + d[1]}`);
-        }
-        return [...m].map((k) => { const [x, y] = k.split(',').map(Number); return cells(x, x + 1, y, y + 1, 1); });
-      })());
-      scene('test scenes', 'Slit', [SLIT_LIGHT, cells(22, 23, 6, 31, 0), cells(22, 23, 33, 58, 0)]);
-      scene('test scenes', 'Clutter', (() => {
-        const r = rng(3), list = [SLIT_LIGHT];
-        for (let x = 18; x < 64; x++) for (let y = 0; y < 64; y++) if (r() < 0.05) list.push(cells(x, x + 1, y, y + 1, 0));
-        return list;
-      })());
-      scene('scenes', 'Pinhole', [
-        [-200, -84, 16, 24, 0.35], [-200, -60, 16, 24, 0.55], [-200, -36, 16, 24, 0.7], [-200, -12, 16, 24, 0.65],
-        [-200, 12, 16, 24, 0.7], [-200, 36, 16, 24, 0.45], [-200, 60, 16, 24, 0.4],
-        [-5, -500, 8, 488, 0], [-5, 12, 8, 500, 0],
-      ]);
-      scene('scenes', 'Two lights', [[-200, -100, 40, 40, 0.4], [-200, 60, 40, 40, 0.45], [-40, -80, 20, 160, 0], [100, -120, 10, 240, 0.8]]);
-      scene('scenes', 'Slats', [[-300, -30, 30, 60, 0.8], ...Array.from({ length: 9 }, (_, i) => [-40, -200 + i * 48, 12, 24, 0]), [150, -60, 4, 120, 0]]);
-      scene('scenes', 'Thin walls', [[200, -10, 20, 20, 0.8], [-200, -80, 400, 1, 0], [-200, -20, 400, 2, 0], [-200, 40, 400, 4, 0], [-200, 110, 400, 8, 0]]);
-      scene('scenes', 'Room', [
-        [-250, -200, 500, 12, 0], [-250, 188, 500, 12, 0], [-250, -200, 12, 400, 0], [238, -200, 12, 400, 0],
-        [-120, -120, 8, 8, 0.8], [120, 90, 6, 6, 0.5], [-20, -20, 60, 40, 0], [60, -140, 8, 120, 0],
-      ]);
-      scene('scenes', 'Empty', []);
+      const scenes = scenesFor({ volumes: false });
 
       // ── Scene switching ──
-      let currentScene = 0;
+      let currentScene = 0, freeN = null;   // freeN: the resolution to go back to after a test
       const sceneButtons = [];
       function switchScene(index) {
         currentScene = (index + scenes.length) % scenes.length;
         document.activeElement?.blur();
-        shapes = scenes[currentScene].list.map(([x, y, w, h, b]) => ({ x, y, w, h, b }));
+        const s = scenes[currentScene];
+        if (s.N) ((freeN ??= cfg.N), (cfg.N = s.N));
+        else if (freeN) ((cfg.N = freeN), (freeN = null));
+        shapes = s.shapes.map(({ x, y, w, h, brightness: b }) => ({ x, y, w, h, b }));
         strokes = [];
         selectShape(null);
         sceneButtons.forEach((b, i) => b.classList.toggle('on', i === currentScene));
@@ -625,9 +656,11 @@
 
       // ════════════════════════════════════════════════════════════════════
       // Rasterisation: scene units → cells. Cell (gx, gy) with gy down is index gx·N + (N − 1 − gy) (y up).
-      // A rectangle covers the cells whose centres it contains, at least one cell thick; strokes stamp size × size squares.
+      // A rectangle covers the cells whose centres it contains, at least one cell thick. Strokes stamp size × size squares when
+      // snapped to the grid; otherwise a pixel joins a stroke when the swept brush covers its centre.
       // ════════════════════════════════════════════════════════════════════
       let E = null, A = null, cursor = null;
+      const raster = { snap: false };
       function rasterise(N) {
         E.fill(0);
         A.fill(1);
@@ -641,6 +674,14 @@
           for (let x = Math.round(x0); x < Math.round(x1); x++) for (let y = Math.round(y0); y < Math.round(y1); y++) put(x, y, b);
         };
         const sweep = (ax, ay, bx, by, size, b) => {
+          if (!raster.snap) {
+            const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) * 4)), h = Math.max(size, 1) / 2;
+            for (let t = 0; t <= n; t++) {
+              const cx = ax + ((bx - ax) * t) / n, cy = ay + ((by - ay) * t) / n;
+              for (let x = Math.round(cx - h); x < Math.round(cx + h); x++) for (let y = Math.round(cy - h); y < Math.round(cy + h); y++) put(x, y, b);
+            }
+            return;
+          }
           const lo = (c) => Math.round(c - size / 2), n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) * 2)), sz = Math.max(1, Math.round(size));
           for (let t = 0; t <= n; t++) {
             const cx = ax + ((bx - ax) * t) / n, cy = ay + ((by - ay) * t) / n;
@@ -649,28 +690,28 @@
         };
         for (const s of shapes) box(g(s.x), g(s.x + s.w), g(s.y), g(s.y + s.h), s.b);
         for (const s of strokes) sweep(g(s.x0), g(s.y0), g(s.x1), g(s.y1), s.size * k, s.b);
-        if (cursor && pen.kind !== 'eraser' && !drag && !silhouetteView.on) sweep(g(cursor[0]), g(cursor[1]), g(cursor[0]), g(cursor[1]), pen.size, penRadiance());
+        if (cursor && !locked() && pen.kind !== 'eraser' && !drag && !silhouetteView.on) sweep(g(cursor[0]), g(cursor[1]), g(cursor[0]), g(cursor[1]), pen.size, penRadiance());
       }
 
       // ════════════════════════════════════════════════════════════════════
-      // Pen / shape inspector: a kind plus brightness (radiance of a solid light)
+      // Pen / shape inspector: the shared pens without volume (this scheme models solids only), with the light's brightness
       // ════════════════════════════════════════════════════════════════════
       const KINDS = [
-        ['solid', 'solid light', 'opaque and glowing'],
-        ['wall', 'wall', 'opaque, dark'],
+        ['light', 'light', 'solid and glowing'],
+        ['solid', 'solid', 'solid and dark'],
         ['eraser', 'eraser', 'erase strokes'],
       ];
-      const pen = { kind: 'solid', brightness: 0.8, size: 2 };
+      const pen = { kind: 'light', brightness: 0.8, size: 2 };
       let selected = null;
-      const penRadiance = () => (pen.kind === 'solid' ? pen.brightness : 0);
+      const penRadiance = () => (pen.kind === 'light' ? pen.brightness : 0);
       const PEN_SIZES = [1, 2, 4, 8, 16, 32]; // cells of the N × N grid
       const setPenSize = (v) => ((pen.size = v), touch(), refresh());
       const stepPenSize = (d) => setPenSize(PEN_SIZES[Math.max(0, Math.min(PEN_SIZES.length - 1, PEN_SIZES.indexOf(pen.size) + d))] ?? 2);
-      const kindOf = (s) => (s.b > 0 ? 'solid' : 'wall');
+      const kindOf = (s) => (s.b > 0 ? 'light' : 'solid');
       const penGet = (key) => (selected ? (key === 'kind' ? kindOf(selected) : selected.b > 0 ? selected.b : pen.brightness) : pen[key]);
       const setPen = (key, v) => {
         if (selected) {
-          if (key === 'kind' && v !== 'eraser') selected.b = v === 'solid' ? pen.brightness : 0;
+          if (key === 'kind' && v !== 'eraser') selected.b = v === 'light' ? pen.brightness : 0;
           if (key === 'brightness' && selected.b > 0) selected.b = v;
         } else pen[key] = v;
         touch();
@@ -678,10 +719,10 @@
       segmented($('pen-fields'), { options: KINDS, get: () => penGet('kind'), set: (k) => setPen('kind', k) });
       slider($('pen-fields'), {
         label: 'brightness',
-        title: 'radiance of the solid light (mono)',
+        title: 'radiance of the light (mono)',
         min: 0.05, max: 2, step: 0.01,
         get: () => penGet('brightness'), set: (v) => setPen('brightness', v), format: (v) => v.toFixed(2),
-        enabled: () => penGet('kind') === 'solid',
+        enabled: () => penGet('kind') === 'light',
       });
       function syncPen() {
         $('pen-title').textContent = selected ? 'shape' : 'pen';
@@ -698,13 +739,38 @@
       // Panels
       // ════════════════════════════════════════════════════════════════════
       const SIZES = [64, 128, 256, 512];
-      segmented($('scene-params'), { label: 'cells (N × N, one per pixel)', options: SIZES.map((n) => [n, String(n)]), ...field(cfg, 'N'), url: ['N', 256] });
-      segmented($('size-field'), { label: 'size (cells)', options: PEN_SIZES.map((n) => [n, String(n)]), get: () => pen.size, set: setPenSize });
+      segmented($('scene-params'), { label: 'resolution (N × N pixels)', title: 'tests set their own', options: SIZES.map((n) => [n, String(n)]), ...field(cfg, 'N'), enabled: () => !scenes[currentScene].N, url: ['N', 256] });
+      toggle($('scene-params'), {
+        label: 'snap to grid',
+        title: 'strokes stamp whole pixels, so they snap as they move; off, a pixel joins a stroke when the brush covers its centre',
+        ...field(raster, 'snap'),
+        url: ['snap', false],
+      });
+      segmented($('size-field'), { label: 'size (pixels)', options: PEN_SIZES.map((n) => [n, String(n)]), get: () => pen.size, set: setPenSize });
 
       const O = $('output');
       const redrawOnly = () => (redraw = true);
-      segmented(O, { label: 'view', key: 'v', title: 'fluence, or the rasterised scene', options: [['fluence', 'fluence'], ['scene', 'scene']], ...field(out, 'view', redrawOnly), url: ['view', 'fluence'] });
-      segmented(O, { label: 'map', key: 'b', options: [['tone', 'tonemap'], ['banded', 'banded']], ...field(out, 'map', redrawOnly), url: ['map', 'tone'] });
+      segmented(O, {
+        label: 'reference',
+        title: 'a reference of the same scene, or Polygonal HRC\'s difference from it; none selected shows Polygonal HRC. The scene locks while one is shown',
+        cols: 2,
+        options: [[1, 'path trace'], [2, 'exact'], [3, 'Δ path trace', 'error against the path trace'], [4, 'Δ exact', 'error against the exact reference']],
+        get: () => refMode,
+        set: (v) => setReference(refMode === v ? 0 : v),
+        url: ['ref', 0],
+      });
+      O.lastElementChild.classList.add('reference');
+      segmented(O, {
+        label: 'exact: directions per pixel',
+        options: [[16, '16 N'], [64, '64 N']],
+        get: () => refDensity,
+        set: (v) => ((refDensity = v), (redraw = true)),
+        enabled: () => refMode === 2 || refMode === 4,
+        url: ['refdir', 64],
+      });
+      const refStatus = el('div', { className: 'hint' });
+      O.append(refStatus);
+      segmented(O, { label: 'map', key: 'b', title: 'linear: L · exposure clipped at 1; sRGB: 1 − e^−(L · exposure); banded: log10 bands', options: [['linear', 'linear'], ['srgb', 'sRGB'], ['banded', 'banded']], ...field(out, 'map', redrawOnly), url: ['map', 'srgb'] });
       slider(O, {
         label: 'exposure',
         title: 'shown: mean radiance L = fluence / 2π, times the exposure (tonemap 1 − e^−L); banded shows log10(L · exposure)',
@@ -713,16 +779,21 @@
         set: (v) => ((out.exposure = +(10 ** v).toPrecision(3)), redrawOnly()),
         format: (v) => String(+(10 ** v).toPrecision(3)),
       });
+      const pair = el('div', { className: 'pair' });
+      O.append(pair);
+      toggle(pair, { label: 'scene', key: 'v', title: 'lights red, solids blue', ...field(out, 'scene', redrawOnly), url: ['showScene', false] });
+      toggle(pair, { label: 'dither', title: 'display only: ±1 LSB triangular noise per screen pixel before 8-bit output, removes banding', ...field(out, 'dither', redrawOnly), url: ['dither', true] });
       const showSilhouettes = () => ((overlayDirty = true), (redraw = true));
-      toggle($('silhouettes'), { label: 'show occluder silhouettes', key: 'r', ...field(silhouetteView, 'on', () => (touch(), showSilhouettes())), url: ['silhouettes', false] });
+      toggle($('visibility'), { label: 'corner runs', key: 'k', title: 'occluder silhouettes per tile; off: transmittance and mean light per tile', ...field(cfg, 'runs', () => (touch(), showSilhouettes())), url: ['runs', true] });
+      toggle($('silhouettes'), { label: 'show occluder silhouettes', key: 'r', ...field(silhouetteView, 'on', () => (touch(), showSilhouettes())), url: ['silhouettes', false],
+        enabled: () => cfg.runs, title: 'only with corner runs' });
       segmented($('silhouettes'), {
         label: 'tile length L',
         options: [2, 4, 8, 16, 32, 64, 128].map((n) => [n, String(n)]),
         ...field(silhouetteView, 'L', () => ((apex = apex && snapApex(apex)), showSilhouettes())),
-        enabled: () => silhouetteView.on,
+        enabled: () => silhouetteView.on && cfg.runs,
         url: ['L', 16],
       });
-      toggle(O, { label: 'dither', title: 'display only: ±1 LSB triangular noise per screen pixel before 8-bit output, removes banding', ...field(out, 'dither', redrawOnly), url: ['dither', true] });
 
       // ── Legend (viridis, same samples as the draw shader) ──
       const VIRIDIS = [
@@ -736,10 +807,54 @@
         const s = Math.max(0, Math.min(1, t)) * 16, i = Math.min(Math.floor(s), 15), f = s - i;
         return `rgb(${VIRIDIS[i].map((a, k) => Math.round((a + (VIRIDIS[i + 1][k] - a) * f) * 255)).join(',')})`;
       };
+      // the error legend: the draw shader's errorColour, −1 through 0 (at most 1e-5) to +1, ticks at the exponents. Dragging the
+      // bar sets errorClip, symmetric about 0: errors of at least 10^errorClip show magenta (at the ends, 0, nothing does)
+      const sup = (s) => String(s).replace(/[-.0-9]/g, (c) => ({ '-': '⁻', '.': '·' })[c] ?? '⁰¹²³⁴⁵⁶⁷⁸⁹'[c]);
+      function errorLegend(L, scheme, onClip) {
+        const BRIGHTER = [[1, 1, 1], [0.957, 0.647, 0.51], [0.839, 0.376, 0.302], [0.404, 0, 0.122]];
+        const DARKER = [[1, 1, 1], [0.573, 0.773, 0.871], [0.263, 0.576, 0.765], [0.02, 0.188, 0.38]];
+        const colour = (t) => {   // t in [0, 1]: −1 at 0, 0 at ½, +1 at 1
+          const d = Math.abs(2 * t - 1);
+          if (errorClip < 0 && d >= (errorClip + 5) / 5) return 'rgb(217,51,199)';
+          const s = t < 0.5 ? DARKER : BRIGHTER, m = (Math.round(d * 50) / 50) * 3, i = Math.min(Math.floor(m), 2), f = m - i;
+          return `rgb(${s[i].map((a, k) => Math.round((a + (s[i + 1][k] - a) * f) * 255)).join(',')})`;
+        };
+        const b = el('div', { className: 'bar error', title: 'drag to mark errors of at least a size in magenta; double-click to clear' });
+        const marks = [el('i'), el('i')];
+        b.append(...marks);
+        const ticks = el('div', { className: 'ticks' });
+        Object.assign(ticks.style, { position: 'relative', height: '12px' });
+        for (const [x, label] of [[0, '−1'], [20, '−10⁻²'], [40, '−10⁻⁴'], [50, '0'], [60, '10⁻⁴'], [80, '10⁻²'], [100, '1']]) {
+          const s = el('span', { textContent: label });
+          Object.assign(s.style, { position: 'absolute', left: `${x}%`, transform: `translateX(${x === 0 ? '0' : x === 100 ? '-100%' : '-50%'})` });
+          ticks.append(s);
+        }
+        const caption = el('div', { className: 'caption' });
+        const draw = () => {
+          b.style.background = `linear-gradient(to right, ${Array.from({ length: 201 }, (_, k) => `${colour(k / 200)} ${k / 2}%`).join(',')})`;
+          const d = (errorClip + 5) / 5;
+          marks[0].style.left = `${50 - 50 * d}%`;
+          marks[1].style.left = `${50 + 50 * d}%`;
+          caption.textContent = `error: (${scheme} − reference) / reference in L · exposure (reference floored at 0.01), log scale, 10 bands per decade; white at 10⁻⁵ or less, reds brighter, blues darker` +
+            (errorClip < 0 ? `; magenta at least 10${sup(errorClip)}` : '');
+        };
+        const set = (e) => {
+          const r = b.getBoundingClientRect(), d = Math.min(1, Math.abs((2 * (e.clientX - r.left)) / r.width - 1));
+          errorClip = Math.min(0, Math.round((5 * d - 5) * 10) / 10);
+          draw();
+          onClip();
+        };
+        b.addEventListener('pointerdown', (e) => (b.setPointerCapture(e.pointerId), set(e)));
+        b.addEventListener('pointermove', (e) => b.hasPointerCapture(e.pointerId) && set(e));
+        b.addEventListener('dblclick', () => ((errorClip = 0), draw(), onClip()));
+        draw();
+        L.append(b, ticks, caption);
+      }
       function renderLegend() {
         const L = $('legend');
         L.innerHTML = '';
-        if (out.view !== 'fluence' || out.map === 'tone') return;
+        if (refMode >= 3) return errorLegend(L, 'Polygonal HRC', () => (redraw = true));
+        if (out.map !== 'banded') return;
         const stops = [];
         for (let i = 0; i < 22; i++) stops.push(`${viridis(i / 21)} ${(i / 22) * 100}% ${((i + 1) / 22) * 100}%`);
         const ticks = ['−2.2', '−1.65', '−1.1', '−0.55', '0'];
@@ -761,10 +876,10 @@
         if (currentScene !== 0) p.set('scene', scenes[currentScene].id);
         for (const { spec } of controls) {
           if (!spec.url) continue;
-          const [name, def] = spec.url, v = spec.get();
+          const [name, def] = spec.url, v = name === 'N' && freeN ? freeN : spec.get();   // a test's resolution is not saved
           if (v !== def) p.set(name, enc(v));
         }
-        if (out.exposure !== 2) p.set('exposure', String(out.exposure));
+        if (out.exposure !== 1) p.set('exposure', String(out.exposure));
         const qs = p.toString();
         history.replaceState(null, '', qs ? '?' + qs : location.pathname);
       }
@@ -776,7 +891,7 @@
           spec.set(p.has(name) ? dec(p.get(name), def) : def);
         }
         if (!SIZES.includes(cfg.N)) cfg.N = 256;
-        out.exposure = Number(p.get('exposure')) || 2;
+        out.exposure = Number(p.get('exposure')) || 1;
         const s = p.get('scene') ?? '0';
         const byId = scenes.findIndex((x) => x.id === s);
         return byId >= 0 ? byId : Number.isFinite(Number(s)) ? Number(s) : 0;
@@ -813,10 +928,12 @@
         @group(0) @binding(1) var<storage, read> A: array<f32>;
         @group(0) @binding(2) var<storage, read> E: array<f32>;
         struct Draw {
-          P: vec4f,   // N, exposure / 2π (fluence → mean radiance), map (0 tone, 1 banded), view (0 fluence, 1 scene)
-          Q: vec4f,   // canvas size in device pixels, dither (0 / 1), unused
+          P: vec4f,   // N, exposure / 2π (fluence → mean radiance), map (0 linear, 1 sRGB, 2 banded), reference view
+          Q: vec4f,   // canvas size in device pixels, dither (0 / 1), scene (0 / 1)
+          R: vec4f,   // error clip (errors of at least it show magenta), unused
         }
         @group(0) @binding(3) var<uniform> D: Draw;
+        @group(0) @binding(4) var<storage, read> R: array<f32>;   // the reference's radiance per pixel
         const VIR = array<vec3f, 17>(${VIRIDIS.map((c) => `vec3f(${c.join(', ')})`).join(', ')});
         fn viridis(t: f32) -> vec3f {
           let s = clamp(t, 0.0, 1.0) * 16.0; let i = min(u32(s), 15u);
@@ -834,31 +951,46 @@
         fn corner(x: i32, y: i32) -> f32 {
           let n = i32(D.P.x); return F[clamp(x, 1, n - 1) * (n + 1) + clamp(y, 1, n - 1)];
         }
+        // the error against the reference, (scheme − reference) / reference in displayed units (L · exposure, the reference
+        // floored at 0.01), on a log scale in bands of 0.1 decade: white at 1e-5 or less, darkest at 1; reds where the scheme
+        // is brighter, blues where darker (ColorBrewer RdBu, sRGB)
+        fn errorColour(fs: f32, fr: f32, k: f32, clip: f32) -> vec3f {
+          let e = (fs - fr) * k / max(fr * k, 0.01);
+          if (abs(e) >= clip) { return vec3f(0.85, 0.2, 0.78); }   // at least the clip the legend sets: magenta
+          let m = 3.0 * clamp((floor(log(max(abs(e), 1e-9)) / log(10.0) * 10.0) / 10.0 + 5.0) / 5.0, 0.0, 1.0);
+          var stops = array<vec3f, 4>(vec3f(1.0), vec3f(0.957, 0.647, 0.510), vec3f(0.839, 0.376, 0.302), vec3f(0.404, 0.0, 0.122));
+          if (e < 0.0) { stops = array<vec3f, 4>(vec3f(1.0), vec3f(0.573, 0.773, 0.871), vec3f(0.263, 0.576, 0.765), vec3f(0.020, 0.188, 0.380)); }
+          let i = min(u32(m), 2u);
+          return mix(stops[i], stops[i + 1u], m - f32(i));
+        }
         @fragment fn fs(@builtin(position) q: vec4f) -> @location(0) vec4f {
           let P = D.P;
           let N = i32(P.x); let u = q.xy / D.Q.xy * P.x;   // cell units, y down
           let cell = vec2i(floor(u));
           let i = cell.x * N + (N - 1 - cell.y);
           let a = A[i]; let e = E[i];
-          if (P.w > 0.5) {   // the rasterised scene
-            var c = vec3f(0.04) + vec3f(0.55) * (1.0 - a);
-            if (e > 0.0) { c = vec3f(1.0, 0.75, 0.4) * min(1.0, 0.25 + e); }
-            return vec4f(c, 1.0);
-          }
           let opaque = a <= 0.0;
           let c0 = vec2i(cell.x, N - 1 - cell.y);   // the cell's lower-left corner, y up
-          let f = max(0.25 * (corner(c0.x, c0.y) + corner(c0.x + 1, c0.y) + corner(c0.x, c0.y + 1) + corner(c0.x + 1, c0.y + 1)), 0.0) * P.y;
-          if (P.z > 0.5) {   // banded
+          let fs = max(0.25 * (corner(c0.x, c0.y) + corner(c0.x + 1, c0.y) + corner(c0.x, c0.y + 1) + corner(c0.x + 1, c0.y + 1)), 0.0);   // the pixel's four corners
+          let fr = R[i] * 6.2831853;   // the reference, as fluence
+          let mode = i32(P.w);
+          let f = select(fr, fs, mode == 0) * P.y;
+          if (mode >= 3) {   // error views; solids show the scene's colours when it is on, else white
+            if (a > 0.0) { return vec4f(errorColour(fs, fr, P.y, D.R.x), 1.0); }
+            return vec4f(select(vec3f(1.0), select(vec3f(0.15, 0.3, 1.0), vec3f(1.0, 0.2, 0.15), e > 0.0), D.Q.w > 0.5), 1.0);
+          }
+          if (P.z > 1.5) {   // banded
             if (opaque) { return vec4f(select(vec3f(0.0), vec3f(0.85, 0.15, 0.1), e > 0.0), 1.0); }
             let lv = log(max(f, 1e-9)) / log(10.0);
             let s = (floor(lv * 10.0) / 10.0 + 2.2) / 2.2;
             return dither(srgb(viridis(s)), q.xy);
           }
-          if (opaque) {   // surfaces: their own radiance, walls dark slate
-            if (e > 0.0) { return vec4f(srgb(vec3f(min(1.0, e * 1.25))), 1.0); }
-            return vec4f(0.11, 0.115, 0.13, 1.0);
+          let tint = D.Q.w > 0.5;   // the scene: lights red, solids blue
+          if (opaque) {   // lights show their radiance, walls dark slate
+            if (e > 0.0) { return vec4f(select(srgb(vec3f(min(1.0, e * 1.25))), vec3f(1.0, 0.2, 0.15), tint), 1.0); }
+            return vec4f(select(vec3f(0.11, 0.115, 0.13), vec3f(0.15, 0.3, 1.0), tint), 1.0);
           }
-          return dither(srgb(vec3f(1.0 - exp(-f))), q.xy);
+          return dither(srgb(vec3f(select(1.0 - exp(-f), min(f, 1.0), P.z < 0.5))), q.xy);
         }`,
       });
       const drawPipe = device.createRenderPipeline({
@@ -867,37 +999,61 @@
         fragment: { module: drawModule, entryPoint: 'fs', targets: [{ format }] },
         primitive: { topology: 'triangle-list' },
       });
-      const drawU = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const drawU = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
-      let cascade = null, cascadeKey = '', drawBG = null;
+      let cascade = null, cascadeKey = '';
       function engine() {
         const key = JSON.stringify(cfg);
         if (key === cascadeKey) return cascade;
         cascade?.destroy();
         const N = cfg.N;
-        cascade = new PolygonalHRC(device, N);
+        cascade = new PolygonalHRC(device, N, { runs: cfg.runs });
         cascadeKey = key;
+        reference?.destroy();
+        reference = new Reference(device, N);
         E = new Float32Array(N * N);
         A = new Float32Array(N * N);
-        drawBG = device.createBindGroup({
-          layout: drawPipe.getBindGroupLayout(0),
-          entries: [cascade.fluenceBuffer, cascade.transmittanceBuffer, cascade.emissionBuffer, drawU].map((buffer, binding) => ({ binding, resource: { buffer } })),
-        });
         layout();
         return cascade;
       }
       function encodeDraw(enc, g) {
-        const mapId = { tone: 0, banded: 1 }[out.map];
+        const mapId = { linear: 0, srgb: 1, banded: 2 }[out.map];
         device.queue.writeBuffer(drawU, 0, new Float32Array([
-          g.N, out.exposure / (2 * Math.PI), mapId, out.view === 'scene' ? 1 : 0,
-          view.width, view.height, out.dither ? 1 : 0, 0,
+          g.N, out.exposure / (2 * Math.PI), mapId, refMode,
+          view.width, view.height, out.dither ? 1 : 0, out.scene ? 1 : 0,
+          errorClip < 0 ? 10 ** errorClip : 1e9, 0, 0, 0,
         ]));
+        const R = pathTracing() ? reference.pathTraceOutput : reference.exactOutput;
+        const drawBG = device.createBindGroup({
+          layout: drawPipe.getBindGroupLayout(0),
+          entries: [g.fluenceBuffer, g.transmittanceBuffer, g.emissionBuffer, drawU, R].map((buffer, binding) => ({ binding, resource: { buffer } })),
+        });
         const pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
         pass.setPipeline(drawPipe);
         pass.setBindGroup(0, drawBG);
         pass.draw(3);
         pass.end();
       }
+
+      // ── reference ──
+      function setReference(v) {
+        refMode = v;
+        document.body.classList.toggle('locked', locked());
+        if (locked()) ((cursor = null), selectShape(null));
+        if (!(refMode === 2 || refMode === 4)) reference?.pauseExact();
+        touch();   // solve again (without the cursor's light) and give the reference this scene
+      }
+      const fmtTime = (ms) => (!isFinite(ms) ? '…' : ms < 60e3 ? `${(ms / 1000).toFixed(ms < 10e3 ? 1 : 0)} s` : `${Math.floor(ms / 60e3)} m ${Math.round((ms % 60e3) / 1000)} s`);
+      function renderRefStatus() {
+        const st = refMode === 2 || refMode === 4 ? reference?.exactProgress : null;
+        refStatus.textContent = !refMode ? ''
+          : pathTracing() ? `path trace · ${reference.pathTraceFrames * 16} samples per pixel`
+          : !st ? 'exact · starting…'
+          : st.done ? `exact · ${st.m} directions per pixel · took ${fmtTime(st.elapsedMs)}`
+          : `exact · ${(st.fraction * 100).toFixed(1)} % · ${fmtTime(st.etaMs)} left`;
+      }
+      // the reference's input: the cells' radiance and transmittance as they are (see site/_shared/reference.ts)
+      const uploadReference = () => reference.upload(E, A);
 
       // ── layout: the largest square in the canvas area, 32 px margin ──
       const squareRect = () => view.getBoundingClientRect();
@@ -914,8 +1070,21 @@
 
       // ── frame loop: recompute only when the scene changed, redraw when the output settings changed ──
       let busy = false, frameMs = 0, solveN = 0;
+      // the selected shape's outline, in CSS pixels over the canvas
+      function placeSelection() {
+        const box = $('selection');
+        box.style.display = selected ? 'block' : 'none';
+        if (!selected) return;
+        const k = view.clientWidth / SPAN;
+        Object.assign(box.style, {
+          left: `${view.offsetLeft + (selected.x + SPAN / 2) * k - 1}px`, top: `${view.offsetTop + (selected.y + SPAN / 2) * k - 1}px`,
+          width: `${selected.w * k + 2}px`, height: `${selected.h * k + 2}px`,
+        });
+      }
       async function frame() {
         requestAnimationFrame(frame);
+        placeSelection();
+        if (refMode && reference && (reference.version !== drawnVersion || (pathTracing() && reference.pathTraceFrames < 1024))) redraw = true;
         if (busy || !(dirty || redraw)) return;
         busy = true;
         const solve = dirty;
@@ -928,6 +1097,13 @@
           rasterise(g.N);
           g.upload(E, A);
           g.encodeAll(enc);
+        }
+        if (refMode) {
+          if (solve) uploadReference();
+          if (pathTracing() && reference.pathTraceFrames < 1024) reference.encodePathTrace(enc);
+          if (refMode === 2 || refMode === 4) reference.startExact(refDensity * g.N);
+          drawnVersion = reference.version;
+          renderRefStatus();
         }
         encodeDraw(enc, g);
         device.queue.submit([enc.finish()]);
@@ -960,7 +1136,7 @@
       async function drawSilhouettes(g) {
         overlayDirty = false;
         octx.clearRect(0, 0, overlay.width, overlay.height);
-        if (!silhouetteView.on || !apex) return;
+        if (!silhouetteView.on || !apex || !cfg.runs) return;
         const N = g.N, L = Math.min(silhouetteView.L, N / 2), cascade = Math.log2(L), queries = [];
         for (let quadrant = 0; quadrant < 4; quadrant++) {
           const [ax, ay] = toQuadrant(quadrant, apex, N);
@@ -1018,11 +1194,11 @@
       const KEYS = [
         ['← →', 'previous / next scene'],
         ['⇧ 0–9', 'scene 0–9'],
-        ['1–3', 'pen: solid light, wall, eraser'],
+        ['1–3', 'pen: light, solid, eraser'],
         ['+ −', 'pen size'],
         ['r', 'show occluder silhouettes'],
-        ['v', 'fluence / scene view'],
-        ['b', 'banded view'],
+        ['v', 'scene (lights red, solids blue)'],
+        ['b', 'next map'],
         ['n', 'new shape'],
         ['⌫', 'delete selected shape'],
         ['c', 'clear drawing'],
@@ -1051,19 +1227,20 @@
           if (e.shiftKey) {
             switchScene(+d[1]);
             changed();
-          } else if (+d[1] >= 1 && +d[1] <= KINDS.length) ((pen.kind = KINDS[+d[1] - 1][0]), selectShape(null), touch());
+          } else if (!locked() && +d[1] >= 1 && +d[1] <= KINDS.length) ((pen.kind = KINDS[+d[1] - 1][0]), selectShape(null), touch());
           return;
         }
         let handled = true;
         switch (e.key) {
+          case 'k': case 'K': cfg.runs = !cfg.runs; touch(); showSilhouettes(); changed(); break;
           case 'r': case 'R': silhouetteView.on = !silhouetteView.on; touch(); showSilhouettes(); changed(); break;
-          case 'v': case 'V': out.view = out.view === 'scene' ? 'fluence' : 'scene'; redraw = true; changed(); break;
-          case 'b': case 'B': out.map = out.map === 'banded' ? 'tone' : 'banded'; redraw = true; changed(); break;
+          case 'v': case 'V': out.scene = !out.scene; redraw = true; changed(); break;
+          case 'b': case 'B': out.map = { linear: 'srgb', srgb: 'banded', banded: 'linear' }[out.map]; redraw = true; changed(); break;
           case '?': toggleHelp(); break;
           case 'Escape': toggleHelp(false); selectShape(null); break;
           case '=': case '+': stepPenSize(1); break;
           case '-': case '_': stepPenSize(-1); break;
-          case 'c': case 'C': strokes = []; touch(); break;
+          case 'c': case 'C': if (!locked()) ((strokes = []), touch()); break;
           case 's': case 'S': screenshot(); break;
           case 't': case 'T': {
             const r = await engine().profile(10);
@@ -1074,6 +1251,7 @@
           case 'ArrowRight': switchScene(currentScene + 1); changed(); break;
           case 'ArrowLeft': switchScene(currentScene - 1); changed(); break;
           case 'n': case 'N':
+            if (locked()) break;
             shapes.push({ x: -30, y: -30, w: 60, h: 60, b: penRadiance() });
             selectShape(shapes.at(-1));
             touch();
@@ -1113,6 +1291,7 @@
       };
       let drawing = false, drag = null, last = null;
       view.addEventListener('pointerdown', (e) => {
+        if (locked()) return;
         const p = toScene(e);
         view.setPointerCapture(e.pointerId);
         const s = shapeAt(p);
@@ -1166,13 +1345,17 @@
         cursor = null;
         touch();
       });
+      // a click beside the square deselects
+      $('canvas-area').addEventListener('pointerdown', (e) => {
+        if (e.target === $('canvas-area')) selectShape(null);
+      });
 
       // debugging hooks
       // the canvas as a PNG data URL
       const capture = () => new Promise((res) => {
         const enc = device.createCommandEncoder(); encodeDraw(enc, engine()); device.queue.submit([enc.finish()]); res(view.toDataURL('image/png'));
       });
-      window.polygonalHRC = { cfg, out, device, engine, touch, capture, stats: () => ({ frameMs }), scene: () => ({ shapes, strokes, E, A }) };
+      window.polygonalHRC = { cfg, out, device, engine, touch, capture, reference: () => reference, stats: () => ({ frameMs }), scene: () => ({ shapes, strokes, E, A }) };
 
       // ── Init ──
       const initScene = loadURL();

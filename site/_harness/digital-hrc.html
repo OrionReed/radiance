@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Digital HRC harness</title>
+  </head>
+  <body>
+    <pre id="info">loading…</pre>
+    <script type="module">
+      // Headless entries: window.harness.solve / time, for Digital HRC on given arrays.
+      import { DigitalHRC } from '../digital-hrc/digital-hrc.js';
+
+      const adapter = await navigator.gpu?.requestAdapter();
+      const device = await adapter.requestDevice({
+        requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize },
+      });
+      const errors = []; device.addEventListener('uncapturederror', (e) => errors.push(e.error.message));
+      let current = null, currentKey = '';
+      const engine = (N, options) => {
+        const key = JSON.stringify([N, options]);
+        if (key !== currentKey) {
+          if (current) for (const v of Object.values(current)) if (v instanceof GPUBuffer) v.destroy();
+          current = new DigitalHRC(device, N, options);
+          currentKey = key;
+        }
+        return current;
+      };
+      const fromB64 = (s) => new Float32Array(Uint8Array.from(atob(s), (c) => c.charCodeAt(0)).buffer);
+      const toB64 = (a) => { const u8 = new Uint8Array(a.buffer); let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000)); return btoa(s); };
+      const bytes = (g) => g.rayBuffer.size + g.beyondSampleBuffer.size + g.cascade1BeyondBuffer.size;
+
+      window.harness = {
+        // { N, E, A (base64 f32, [x * N + y]), options, quadrants: 4 | 1 } -> fluence [x * N + y]
+        async solve({ N, E, A, options = {}, quadrants = 4 }) {
+          errors.length = 0;
+          const g = engine(N, options);
+          const compile = await g.compileInfo();
+          const F = quadrants === 1 ? await g.solveQuadrant0(fromB64(E), fromB64(A)) : await g.solve(fromB64(E), fromB64(A));
+          return { fluence: toB64(F), compile, errors: [...errors], bytes: bytes(g) };
+        },
+        // GPU time of the four quadrants' passes (no upload or readback): rounds of reps frames back to back, median ms per frame
+        async time({ N, E, A, options = {}, reps = 10, rounds = 5 }) {
+          const g = engine(N, options);
+          g.upload(fromB64(E), fromB64(A));
+          const run = async (n) => {
+            await device.queue.onSubmittedWorkDone(); const t0 = performance.now();
+            for (let r = 0; r < n; r++) { const enc = device.createCommandEncoder(); g.encodeAll(enc); device.queue.submit([enc.finish()]); }
+            await device.queue.onSubmittedWorkDone(); return (performance.now() - t0) / n;
+          };
+          await run(2); const t = [];
+          for (let i = 0; i < rounds; i++) t.push(await run(reps));
+          t.sort((a, b) => a - b);
+          return { ms: t[t.length >> 1], min: t[0], bytes: bytes(g), errors: [...errors] };
+        },
+        // GPU time of each stage of quadrant 0 alone, ms
+        async profile({ N, E, A, options = {}, reps = 10 }) {
+          const g = engine(N, options); g.upload(fromB64(E), fromB64(A));
+          return g.profile(reps, 0);
+        },
+      };
+      window.harnessReady = true;
+      document.getElementById('info').textContent = 'ready';
+    </script>
+  </body>
+</html>

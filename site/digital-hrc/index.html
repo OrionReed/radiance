@@ -3,8 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Moment HRC</title>
+    <title>Digital HRC</title>
     <meta name="description" content="HRC with exact falloff, b-type rays, l-system lines, etc." />
+    <meta name="order" content="2" />
     <style>
       *,
       *::before,
@@ -415,6 +416,56 @@
       #view.grabbing {
         cursor: grabbing;
       }
+      /* the scene lock's colour: the outline around the locked square and the selected reference */
+      :root {
+        --lock: #d4665a;
+      }
+      .reference .seg button.on {
+        background: var(--lock);
+        color: #fff;
+      }
+      /* two toggles side by side */
+      .pair {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0 12px;
+        margin-top: 10px;
+      }
+      .pair .field {
+        margin-top: 0;
+      }
+      /* the error legend's bar: drag to mark errors above a size in magenta */
+      #legend .bar.error {
+        position: relative;
+        cursor: ew-resize;
+        touch-action: none;
+      }
+      #legend .bar.error i {
+        position: absolute;
+        top: -2px;
+        bottom: -2px;
+        width: 2px;
+        margin-left: -1px;
+        background: var(--text);
+        border-radius: 1px;
+      }
+      /* the scene locks while a reference is shown: no drawing or editing, and an outline around the square */
+      body.locked #pen {
+        opacity: 0.4;
+        pointer-events: none;
+      }
+      body.locked #view {
+        outline: 2px solid var(--lock);
+        outline-offset: 3px;
+        cursor: default;
+      }
+      #selection {
+        position: absolute;
+        display: none;
+        border: 1px solid rgba(255, 255, 255, 0.85);
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+        pointer-events: none;
+      }
       #error {
         position: absolute;
         inset: 0;
@@ -442,12 +493,13 @@
         <h2><span id="pen-title">pen</span> <small id="pen-sub">draw on the canvas</small></h2>
         <div id="pen-fields"></div>
         <div id="size-field"></div>
-        <div class="hint">light = glowing, see-through · solid light = glowing and opaque (for now a dense medium, σ ≤ 8 per cell) · wall = opaque · medium = partly absorbing · drag a shape to move it · the cursor previews the pen</div>
+        <div class="hint">light = solid and glowing · solid = dark · volume = partly see-through · each sets brightness and opacity, which can then be changed · drag a shape to move it · the cursor previews the pen</div>
       </section>
     </aside>
 
     <div id="canvas-area">
       <canvas id="view"></canvas>
+      <div id="selection"></div>
       <div id="perf-graph">
         <div class="perf-stats">
           <span id="perf-fps" style="color: rgba(255, 255, 255, 0.7)"></span>
@@ -479,9 +531,11 @@
     </aside>
 
     <script type="module">
-      // Moment HRC: interactive page. Scenes are plain data (rectangles in scene units), rasterised on the CPU into emission E
+      // Digital HRC: interactive page. Scenes are plain data (rectangles in scene units), rasterised on the CPU into emission E
       // and transmittance A.
-      import { MomentHRC } from './moment-hrc.js';
+      import { DigitalHRC } from './digital-hrc.js';
+      import { scenesFor, SPAN } from '../_shared/scenes';
+      import { Reference } from '../_shared/reference';
 
       const $ = (id) => document.getElementById(id);
       const el = (tag, props = {}, ...children) => {
@@ -494,8 +548,14 @@
       // ════════════════════════════════════════════════════════════════════
       // State. cfg rebuilds the cascade when it changes; out only redraws.
       // ════════════════════════════════════════════════════════════════════
-      const cfg = { N: 512, splitRule: 'balanced', halfFloatRays: false, averagedRounding: false, onePass: false, opaqueLightKernel: false };
-      const out = { view: 'fluence', map: 'tone', exposure: 2, dither: true, tint: false };
+      const cfg = { N: 256, splitRule: 'balanced', solidLights: true };
+      const out = { map: 'srgb', exposure: 1, dither: true, scene: false };
+      // reference view: 0 none (the scheme itself), 1 path trace, 2 exact, 3 error against the path trace, 4 against exact.
+      // The scene locks while one is shown.
+      let refMode = 0, refDensity = 64, reference = null, drawnVersion = -1, errorClip = 0;   // errorClip: exponent, 0 off
+      const locked = () => refMode !== 0;
+      const pathTracing = () => refMode === 1 || refMode === 3;
+
       let dirty = true, redraw = true;
       const touch = () => (dirty = true);
 
@@ -576,116 +636,38 @@
       // Materials, in the square-pixel (px-box) model. Mono: a colour's luminance S is the material's radiance (its source
       // function). Opacity is per reference cell (N = 256), so a scene looks the same at every N: extinction per cell
       // σ = −ln(1 − opacity) · 256/N, A = e^−σ, emission density E = S σ, so a thick block glows with radiance S.
-      // Opacity 1 is exactly opaque (A = 0): a wall, or a solid light whose cell emits radiance S from its own surface.
-      // Opacity 0 is a volumetric light: E = S per reference cell length.
+      // Opacity 1 is solid (A = 0): dark, or a light of radiance S on its faces. Opacity 0 is see-through: E = S per reference
+      // cell length.
       // ════════════════════════════════════════════════════════════════════
-      const presets = [
-        { name: 'Eraser', css: null, rgb: [0, 0, 0] },
-        { name: 'Black', css: '#000', rgb: [0, 0, 0] },
-        { name: 'Red', css: '#ff4444', rgb: [1, 0.25, 0.25] },
-        { name: 'Orange', css: '#ff8833', rgb: [1, 0.5, 0.2] },
-        { name: 'Yellow', css: '#dddd33', rgb: [0.75, 0.75, 0.2] },
-        { name: 'Green', css: '#44dd55', rgb: [0.25, 0.8, 0.35] },
-        { name: 'Cyan', css: '#44dddd', rgb: [0.25, 0.75, 0.75] },
-        { name: 'Blue', css: '#4466ff', rgb: [0.3, 0.4, 1] },
-        { name: 'Purple', css: '#aa44ff', rgb: [0.65, 0.3, 1] },
-        { name: 'White', css: '#ffffff', rgb: [0.8, 0.8, 0.8] },
-      ];
       const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      const REF = 256, SIG_CAP = 8;
+      const REF = 256;
       const material = (rgb, opacity, N) => {
         const S = lum(rgb);
         if (opacity <= 0) return { e: (S * REF) / N, a: 1 };
-        if (opacity >= 1) return { e: S, a: 0 }; // an opaque cell (wall, or solid light of radiance S emitting from its own surface)
-        const sigRef = opacity >= 1 ? (S > 0 ? SIG_CAP : Infinity) : Math.min(-Math.log(1 - opacity), S > 0 ? SIG_CAP : Infinity);
-        const sig = (sigRef * REF) / N, a = Math.exp(-sig);
-        return { e: S > 0 ? S * sig : 0, a };
+        if (opacity >= 1) return { e: S, a: 0 };
+        const sig = (-Math.log(1 - opacity) * REF) / N;
+        return { e: S * sig, a: Math.exp(-sig) };
       };
 
       // ════════════════════════════════════════════════════════════════════
-      // Scenes: a registry. Coordinates are scene units with the origin at the square's centre and
-      // 1024 units across (1 unit = 1 cell at N = 1024), independent of N and of the window.
-      //   scene(group, name, build)   build(ctx) with ctx.add(x, y, w, h, colour, opts) → shape, ctx.shapes([...])
-      // A shape is { x, y, w, h, rgb, opacity } (top-left, y down).
+      // Scenes: the shared set (site/_shared/scenes.ts). A shape here is { x, y, w, h, rgb, opacity } in scene units
+      // (top-left, y down; rgb grey, its luminance the brightness). Tests impose their resolution while they are shown.
       // ════════════════════════════════════════════════════════════════════
-      const SPAN = 1024;
       let shapes = [], strokes = [];
-      const scenes = [];
-      const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-      const scene = (group, name, build) => scenes.push({ id: slug(name), group, name, build });
-
-      function sceneContext() {
-        const add = (x, y, w, h, colour, opts = {}) => {
-          const s = { x, y, w, h, rgb: opts.color ?? [...(presets[colour]?.rgb ?? [0, 0, 0])], opacity: opts.opacity ?? 1 };
-          shapes.push(s);
-          return s;
-        };
-        return { add, shapes: (list) => list.map(([x, y, w, h, c, o]) => add(x, y, w, h, c, o)) };
-      }
-
-      // ── Scene definitions ── shapes are [x, y, w, h, colourIndex, opts?] (top-left, scene units)
-      const V0 = { opacity: 0 }; // volumetric light
-      const PINHOLE = [
-        [-200, -84, 16, 24, 2], [-200, -60, 16, 24, 3], [-200, -36, 16, 24, 4], [-200, -12, 16, 24, 5],
-        [-200, 12, 16, 24, 6], [-200, 36, 16, 24, 7], [-200, 60, 16, 24, 8],
-        [-5, -500, 8, 488, 1], [-5, 12, 8, 500, 1],
-      ];
-      // every opaque light (a coloured shape at full opacity) is drawn as its volume equivalent; scenes with one are also
-      // listed with their opaque lights in the last section
-      const isSolidLight = ([, , , , colour, opts]) => colour >= 2 && (opts?.opacity ?? 1) >= 1;
-      const asVolume = (list) => list.map((s) => (isSolidLight(s) ? [...s.slice(0, 5), V0] : s));
-      const solidScenes = [];
-      const staticScene = (group, name, list) => {
-        scene(group, name, (c) => c.shapes(asVolume(list)));
-        if (list.some(isSolidLight)) solidScenes.push([name, list]);
-      };
-
-      staticScene('volumetric lights', 'Point + wall', [[180, 0, 4, 4, 9, V0], [-200, -60, 40, 160, 1], [-60, 40, 14, 14, 1]]);
-      staticScene('volumetric lights', 'Three lights', [[180, -2, 4, 4, 9, V0], [200, -80, 6, 6, 3, V0], [240, 70, 8, 8, 6, V0], [-30, -10, 40, 20, 1]]);
-      staticScene('volumetric lights', 'Vol room', [
-        [-250, -200, 500, 12, 1], [-250, 188, 500, 12, 1], [-250, -200, 12, 400, 1], [238, -200, 12, 400, 1],
-        [-120, -120, 8, 8, 9, V0], [120, 90, 6, 6, 3, V0], [-20, -20, 60, 40, 1], [60, -140, 8, 120, 1],
-      ]);
-      // a light behind a wall with a gap, an absorbing box, a second light
-      staticScene('volumetric lights', 'Gap + box', [
-        [-8, -8, 16, 16, 9, V0], [192, -320, 16, 272, 1], [192, 48, 16, 272, 1], [-352, -240, 192, 16, 1],
-        [-256, 128, 160, 160, 0, { opacity: 0.2 }], [352, -328, 16, 16, 0, { color: [0.6, 0.6, 0.6], opacity: 0 }],
-      ]);
-
-      staticScene('occluders', 'Pinhole', PINHOLE);
-      staticScene('occluders', 'Center block', [[-60, -60, 120, 120, 1]]);
-      staticScene('occluders', 'Thin walls', [[200, -10, 20, 20, 9], [-200, -80, 400, 1, 1], [-200, -20, 400, 2, 1], [-200, 40, 400, 4, 1], [-200, 110, 400, 8, 1]]);
-      staticScene('occluders', 'Two lights', [[-200, -100, 40, 40, 2], [-200, 60, 40, 40, 7], [-40, -80, 20, 160, 1], [100, -120, 10, 240, 9]]);
-      staticScene('occluders', 'Slats', [
-        [-300, -30, 30, 60, 9], ...Array.from({ length: 9 }, (_, i) => [-40, -200 + i * 48, 12, 24, 1]), [150, -60, 4, 120, 1],
-      ]);
-
-      staticScene('media', 'Glowing fog', [
-        [-200, -40, 60, 60, 9], [-80, -100, 60, 200, 2, { opacity: 0.015 }],
-        [-10, -100, 60, 200, 5, { opacity: 0.015 }], [60, -100, 60, 200, 7, { opacity: 0.015 }], [180, -40, 40, 80, 1],
-      ]);
-      staticScene('media', 'Fog room', [
-        [-250, -200, 500, 15, 1], [-250, 185, 500, 15, 1], [-250, -200, 15, 400, 1], [235, -200, 15, 400, 1],
-        [-200, -185, 30, 30, 3], [170, 155, 30, 30, 6], [-100, -50, 200, 100, 0, { opacity: 0.01 }],
-      ]);
-      staticScene('media', 'Smoke', [[-30, 80, 60, 30, 3], [-80, -100, 160, 160, 0, { opacity: 0.05 }], [-200, -60, 30, 30, 1], [170, -60, 30, 30, 1]]);
-      staticScene('media', 'Absorbers', [
-        [-260, -20, 30, 40, 9], ...[0.02, 0.05, 0.1, 0.2, 0.4, 0.7].map((o, i) => [-180 + i * 70, -120, 40, 240, 0, { opacity: o }]),
-      ]);
-
-      scene('empty', 'Empty', () => {});
-      for (const [name, list] of solidScenes) scene('solid lights (testing)', `${name} (solid)`, (c) => c.shapes(list));
+      const scenes = scenesFor({ volumes: true });
 
       // ── Scene switching ──
-      let currentScene = 0;
+      let currentScene = 0, freeN = null;   // freeN: the resolution to go back to after a test
       const sceneButtons = [];
       function switchScene(index) {
         currentScene = (index + scenes.length) % scenes.length;
         document.activeElement?.blur();
-        shapes = [];
+        const s = scenes[currentScene];
+        if (s.N) ((freeN ??= cfg.N), (cfg.N = s.N));
+        else if (freeN) ((cfg.N = freeN), (freeN = null));
+        shapes = s.shapes.map(({ x, y, w, h, brightness: b, opacity }) => ({ x, y, w, h, rgb: [b, b, b], opacity }));
         strokes = [];
         selectShape(null);
-        scenes[currentScene].build(sceneContext());
         sceneButtons.forEach((b, i) => b.classList.toggle('on', i === currentScene));
         $('scene-id').textContent = scenes[currentScene].id;
         touch();
@@ -723,7 +705,7 @@
           if (i >= 0) ((E[i] = m.e), (A[i] = m.a));
         };
         // unsnapped: the material covers a fraction c of the cell. Emission mixes by area and media by optical depth.
-        // Opaque material (walls, solid lights) takes the whole cell when it covers the centre, else nothing: averaging
+        // Solid material (walls, lights) takes the whole cell when it covers the centre, else nothing: averaging
         // its transmittance would let light through a thin wall (two half-covered cells pass 25 %, the wall passes 0).
         const OPAQUE = 0.01;
         const over = (i, m, c, centre) => {
@@ -763,7 +745,7 @@
         for (const s of shapes) {
           const m = material(s.rgb, s.opacity, N);
           let [x0, x1, y0, y1] = [g(s.x), g(s.x + s.w), g(s.y), g(s.y + s.h)];
-          // opaque shapes are at least one cell thick (thinner would cover no cell centre)
+          // solid shapes are at least one cell thick (thinner would cover no cell centre)
           const widen = (a, b) => (b - a >= 1 ? [a, b] : [(a + b) / 2 - 0.5, (a + b) / 2 + 0.5]);
           if (m.a < OPAQUE || raster.snap) [[x0, x1], [y0, y1]] = [widen(x0, x1), widen(y0, y1)];
           if (!raster.snap) {
@@ -782,52 +764,49 @@
       // ════════════════════════════════════════════════════════════════════
       // Pen / shape inspector
       // ════════════════════════════════════════════════════════════════════
-      // A pen is a kind plus brightness (radiance) and opacity; shapes and strokes store { rgb, opacity } (mono: rgb grey).
+      // A pen is a material, brightness (radiance) and opacity; light, solid and volume only set defaults for both.
+      // Shapes and strokes store { rgb, opacity } (mono: rgb grey).
       const KINDS = [
-        ['light', 'light', 'glowing, see-through (opacity 0)'],
-        ['solid', 'solid light', 'glowing and opaque'],
-        ['wall', 'wall', 'opaque, dark'],
-        ['medium', 'medium', 'partly absorbing'],
+        ['light', 'light', 'solid and glowing'],
+        ['solid', 'solid', 'solid and dark'],
+        ['volume', 'volume', 'partly see-through; glows if it has brightness'],
         ['eraser', 'eraser', 'erase strokes'],
       ];
-      const pen = { kind: 'light', brightness: 0.8, opacity: 0.1, size: 2 };
+      const KIND_DEFAULTS = { light: { brightness: 0.8, opacity: 1 }, solid: { brightness: 0, opacity: 1 }, volume: { brightness: 0, opacity: 0.1 } };
+      const pen = { kind: 'light', brightness: 0.8, opacity: 1, size: 2 };
       let selected = null;
-      const kindOf = (m) => (m.opacity <= 0 ? 'light' : m.opacity < 1 ? 'medium' : lum(m.rgb) > 0 ? 'solid' : 'wall');
-      const materialOf = ({ kind, brightness: b, opacity }) => {
-        const grey = (v) => [v, v, v];
-        if (kind === 'light') return { rgb: grey(b), opacity: 0 };
-        if (kind === 'solid') return { rgb: grey(b), opacity: 1 };
-        if (kind === 'wall') return { rgb: grey(0), opacity: 1 };
-        return { rgb: grey(0), opacity }; // medium: absorbing only (glowing media come from scenes)
-      };
+      const kindOf = (m) => (m.opacity < 1 ? 'volume' : lum(m.rgb) > 0 ? 'light' : 'solid');
+      const materialOf = ({ brightness: b, opacity }) => ({ rgb: [b, b, b], opacity });
       const penMaterial = () => materialOf(pen);
       const shapeState = (s) => ({ kind: kindOf(s), brightness: lum(s.rgb), opacity: s.opacity });
       const PEN_SIZES = [1, 2, 4, 8, 16, 32]; // cells of the N × N grid
       const setPenSize = (v) => ((pen.size = v), touch(), refresh());
       const stepPenSize = (d) => setPenSize(PEN_SIZES[Math.max(0, Math.min(PEN_SIZES.length - 1, PEN_SIZES.indexOf(pen.size) + d))] ?? 2);
       const setPen = (key, v) => {
-        if (selected) {
-          const st = { ...shapeState(selected), [key]: v };
-          if (key === 'kind' && st.kind === 'medium' && !(st.opacity > 0 && st.opacity < 1)) st.opacity = pen.opacity;
-          if (key === 'kind' && st.kind !== 'wall' && st.brightness <= 0 && st.kind !== 'medium') st.brightness = pen.brightness;
-          if (st.kind !== 'eraser') (Object.assign(selected, materialOf(st)), touch());
-        } else ((pen[key] = v), touch());
+        if (selected && v === 'eraser') return;
+        const st = selected ? shapeState(selected) : pen;
+        if (key === 'kind') Object.assign(st, { kind: v }, KIND_DEFAULTS[v]);
+        else st[key] = v;
+        if (selected) Object.assign(selected, materialOf(st));
+        touch();
       };
-      const penGet = (key) => (selected ? shapeState(selected)[key] : pen[key]);
+      // the kind shown is the one the material is, unless the pen erases
+      const penGet = (key) => (selected ? shapeState(selected)[key] : key === 'kind' && pen.kind !== 'eraser' ? kindOf(penMaterial()) : pen[key]);
       segmented($('pen-fields'), { cols: 3, options: KINDS, get: () => penGet('kind'), set: (k) => setPen('kind', k) });
       slider($('pen-fields'), {
         label: 'brightness',
-        title: 'radiance of the light (mono)',
+        title: 'radiance (mono): a light\'s faces, or what a thick volume glows with',
         min: 0, max: 2, step: 0.01,
         get: () => penGet('brightness'), set: (v) => setPen('brightness', v), format: (v) => v.toFixed(2),
-        enabled: () => ['light', 'solid'].includes(penGet('kind')),
+        enabled: () => penGet('kind') !== 'eraser',
       });
       slider($('pen-fields'), {
-        label: 'opacity (per reference cell)',
+        label: 'opacity',
+        title: 'per reference pixel (1/256 of the square across): 0 see-through, 1 solid',
         min: 0, max: 1, step: 0.01,
-        get: () => Math.cbrt(penGet('opacity')), set: (v) => setPen('opacity', Math.min(0.99, Math.max(0.001, v ** 3))),
-        format: (v) => { const o = v ** 3; return o < 0.1 ? o.toFixed(3) : o.toFixed(2); },
-        enabled: () => penGet('kind') === 'medium',
+        get: () => Math.cbrt(penGet('opacity')), set: (v) => setPen('opacity', v ** 3),
+        format: (v) => { const o = v ** 3; return o > 0 && o < 0.1 ? o.toFixed(3) : o.toFixed(2); },
+        enabled: () => penGet('kind') !== 'eraser',
       });
       function syncPen() {
         $('pen-title').textContent = selected ? 'shape' : 'pen';
@@ -844,48 +823,53 @@
       // Panels
       // ════════════════════════════════════════════════════════════════════
       const PROBES = [64, 128, 256, 512, 1024];
-      segmented($('scene-params'), { label: 'cells (N × N, one per pixel)', options: PROBES.map((n) => [n, String(n)]), ...field(cfg, 'N'), url: ['N', 512] });
+      segmented($('scene-params'), { label: 'resolution (N × N pixels)', title: 'tests set their own', options: PROBES.map((n) => [n, String(n)]), ...field(cfg, 'N'), enabled: () => !scenes[currentScene].N, url: ['N', 256] });
       toggle($('scene-params'), {
         label: 'snap to grid',
-        title: 'shapes and strokes take whole cells, so they snap as they move; off, lights and media cover cells by area and move smoothly (opaque material always takes whole cells, by their centres)',
+        title: 'shapes and strokes take whole pixels, so they snap as they move; off, volumes cover pixels by area and move smoothly (solids always take whole pixels, by their centres)',
         ...field(raster, 'snap'),
         url: ['snap', false],
       });
-      segmented($('size-field'), { label: 'size (cells)', options: PEN_SIZES.map((n) => [n, String(n)]), get: () => pen.size, set: setPenSize });
+      segmented($('size-field'), { label: 'size (pixels)', options: PEN_SIZES.map((n) => [n, String(n)]), get: () => pen.size, set: setPenSize });
 
       const F = $('features');
       segmented(F, {
         label: 'split rule',
-        title: 'how a ray of odd rise splits into halves (stateless digital rays): balanced = unbiased (mean offset 0 in every cascade), alternating = the earlier rule',
-        options: [['balanced', 'balanced (unbiased)'], ['alternating', 'alternating']],
+        title: 'how a ray of odd rise splits into halves: balanced has mean offset 0 in every cascade; alternating rounds away from zero in even cascades and toward it in odd ones',
+        options: [['balanced', 'balanced'], ['alternating', 'alternating']],
         ...field(cfg, 'splitRule'),
         url: ['splitRule', 'balanced'],
       });
       toggle(F, {
-        label: 'stochastic rounding: averaged',
-        title: 'a ray\'s transmittance is the average over both roundings of its odd split (the expectation of a stochastically rounded path), each path also blocked by the corner cell its chord crosses where it steps a row; light stays on the ray\'s own path. About half the penumbra error against square-pixel truth, no extra memory',
-        ...field(cfg, 'averagedRounding'),
-        enabled: () => !cfg.onePass,
-        url: ['averagedRounding', false],
-      });
-      toggle(F, {
-        label: 'stochastic rounding: one-pass',
-        title: 'every odd split rounds either way with ½, independently per ray, so rays hold expectations (μ0, μ1, μ2, T); where a path steps a row it passes one of the two corner cells (its target\'s own column with probability 1 / (1 + |slope|)), which blocks both the transmittance and the light beyond. Splits, ray chains and the even apex columns\' beyond terms mix both roundings; the shared prefix of neighbouring rays is a stored ray of expected moments (+1 per ray, 2× ray memory). Opaque lights become opaque cells that emit; replaces averaged rounding',
-        ...field(cfg, 'onePass'),
-        url: ['onePass', false],
-      });
-      toggle(F, {
-        label: 'opaque-light kernel',
-        title: 'one-pass: every point read counts an emitting cell\'s projected width, (|cos| + |sin|) / r, the kernel of an opaque emitter. Applied to all light, so it is right only for scenes whose lights are all opaque (volumetric lights get up to 1.41× too much on diagonals); mixed scenes would need the opaque share per ray',
-        ...field(cfg, 'opaqueLightKernel'),
-        enabled: () => cfg.onePass,
-        url: ['opaqueLightKernel', false],
+        label: 'face emission',
+        title: 'a solid light emits from its faces, each read at its exact angle, so rectangular lights are exact up to the cone samples (about 1e-4). Off, its cells emit as cells do, at no extra cost; on, about 2.8× the memory and 3–6× the frame time',
+        ...field(cfg, 'solidLights'),
+        url: ['faces', true],
       });
 
       const O = $('output');
       const redrawOnly = () => (redraw = true);
-      segmented(O, { label: 'view', key: 'v', title: 'fluence, or the rasterised scene (emission warm, absorption grey)', options: [['fluence', 'fluence'], ['scene', 'scene']], ...field(out, 'view', redrawOnly), url: ['view', 'fluence'] });
-      segmented(O, { label: 'map', key: 'b', options: [['tone', 'tonemap'], ['banded', 'banded']], ...field(out, 'map', redrawOnly), url: ['map', 'tone'] });
+      segmented(O, {
+        label: 'reference',
+        title: 'a reference of the same scene, or Digital HRC\'s difference from it; none selected shows Digital HRC. The scene locks while one is shown',
+        cols: 2,
+        options: [[1, 'path trace'], [2, 'exact'], [3, 'Δ path trace', 'error against the path trace'], [4, 'Δ exact', 'error against the exact reference']],
+        get: () => refMode,
+        set: (v) => setReference(refMode === v ? 0 : v),
+        url: ['ref', 0],
+      });
+      O.lastElementChild.classList.add('reference');
+      segmented(O, {
+        label: 'exact: directions per pixel',
+        options: [[16, '16 N'], [64, '64 N']],
+        get: () => refDensity,
+        set: (v) => ((refDensity = v), (redraw = true)),
+        enabled: () => refMode === 2 || refMode === 4,
+        url: ['refdir', 64],
+      });
+      const refStatus = el('div', { className: 'hint' });
+      O.append(refStatus);
+      segmented(O, { label: 'map', key: 'b', title: 'linear: L · exposure clipped at 1; sRGB: 1 − e^−(L · exposure); banded: log10 bands', options: [['linear', 'linear'], ['srgb', 'sRGB'], ['banded', 'banded']], ...field(out, 'map', redrawOnly), url: ['map', 'srgb'] });
       slider(O, {
         label: 'exposure',
         title: 'shown: mean radiance L = fluence / 2π, times the exposure (tonemap 1 − e^−L); banded shows log10(L · exposure)',
@@ -896,8 +880,10 @@
         set: (v) => ((out.exposure = +(10 ** v).toPrecision(3)), redrawOnly()),
         format: (v) => String(+(10 ** v).toPrecision(3)),
       });
-      toggle(O, { label: 'material tint', key: 'm', title: 'emitters red, occluders and media blue (by how much of the cell they cover)', ...field(out, 'tint', redrawOnly), url: ['tint', false] });
-      toggle(O, { label: 'dither', title: 'display only: ±1 LSB triangular noise per screen pixel before 8-bit output, removes banding', ...field(out, 'dither', redrawOnly), url: ['dither', true] });
+      const pair = el('div', { className: 'pair' });
+      O.append(pair);
+      toggle(pair, { label: 'scene', key: 'v', title: 'lights red, solids blue, volumes tinted by how much of the pixel they hold', ...field(out, 'scene', redrawOnly), url: ['showScene', false] });
+      toggle(pair, { label: 'dither', title: 'display only: ±1 LSB triangular noise per screen pixel before 8-bit output, removes banding', ...field(out, 'dither', redrawOnly), url: ['dither', true] });
 
       // ── Legend (viridis, same samples as the draw shader) ──
       const VIRIDIS = [
@@ -911,14 +897,58 @@
         const s = Math.max(0, Math.min(1, t)) * 16, i = Math.min(Math.floor(s), 15), f = s - i;
         return `rgb(${VIRIDIS[i].map((a, k) => Math.round((a + (VIRIDIS[i + 1][k] - a) * f) * 255)).join(',')})`;
       };
+      // the error legend: the draw shader's errorColour, −1 through 0 (at most 1e-5) to +1, ticks at the exponents. Dragging the
+      // bar sets errorClip, symmetric about 0: errors of at least 10^errorClip show magenta (at the ends, 0, nothing does)
+      const sup = (s) => String(s).replace(/[-.0-9]/g, (c) => ({ '-': '⁻', '.': '·' })[c] ?? '⁰¹²³⁴⁵⁶⁷⁸⁹'[c]);
+      function errorLegend(L, scheme, onClip) {
+        const BRIGHTER = [[1, 1, 1], [0.957, 0.647, 0.51], [0.839, 0.376, 0.302], [0.404, 0, 0.122]];
+        const DARKER = [[1, 1, 1], [0.573, 0.773, 0.871], [0.263, 0.576, 0.765], [0.02, 0.188, 0.38]];
+        const colour = (t) => {   // t in [0, 1]: −1 at 0, 0 at ½, +1 at 1
+          const d = Math.abs(2 * t - 1);
+          if (errorClip < 0 && d >= (errorClip + 5) / 5) return 'rgb(217,51,199)';
+          const s = t < 0.5 ? DARKER : BRIGHTER, m = (Math.round(d * 50) / 50) * 3, i = Math.min(Math.floor(m), 2), f = m - i;
+          return `rgb(${s[i].map((a, k) => Math.round((a + (s[i + 1][k] - a) * f) * 255)).join(',')})`;
+        };
+        const b = el('div', { className: 'bar error', title: 'drag to mark errors of at least a size in magenta; double-click to clear' });
+        const marks = [el('i'), el('i')];
+        b.append(...marks);
+        const ticks = el('div', { className: 'ticks' });
+        Object.assign(ticks.style, { position: 'relative', height: '12px' });
+        for (const [x, label] of [[0, '−1'], [20, '−10⁻²'], [40, '−10⁻⁴'], [50, '0'], [60, '10⁻⁴'], [80, '10⁻²'], [100, '1']]) {
+          const s = el('span', { textContent: label });
+          Object.assign(s.style, { position: 'absolute', left: `${x}%`, transform: `translateX(${x === 0 ? '0' : x === 100 ? '-100%' : '-50%'})` });
+          ticks.append(s);
+        }
+        const caption = el('div', { className: 'caption' });
+        const draw = () => {
+          b.style.background = `linear-gradient(to right, ${Array.from({ length: 201 }, (_, k) => `${colour(k / 200)} ${k / 2}%`).join(',')})`;
+          const d = (errorClip + 5) / 5;
+          marks[0].style.left = `${50 - 50 * d}%`;
+          marks[1].style.left = `${50 + 50 * d}%`;
+          caption.textContent = `error: (${scheme} − reference) / reference in L · exposure (reference floored at 0.01), log scale, 10 bands per decade; white at 10⁻⁵ or less, reds brighter, blues darker` +
+            (errorClip < 0 ? `; magenta at least 10${sup(errorClip)}` : '');
+        };
+        const set = (e) => {
+          const r = b.getBoundingClientRect(), d = Math.min(1, Math.abs((2 * (e.clientX - r.left)) / r.width - 1));
+          errorClip = Math.min(0, Math.round((5 * d - 5) * 10) / 10);
+          draw();
+          onClip();
+        };
+        b.addEventListener('pointerdown', (e) => (b.setPointerCapture(e.pointerId), set(e)));
+        b.addEventListener('pointermove', (e) => b.hasPointerCapture(e.pointerId) && set(e));
+        b.addEventListener('dblclick', () => ((errorClip = 0), draw(), onClip()));
+        draw();
+        L.append(b, ticks, caption);
+      }
       function renderLegend() {
         const L = $('legend');
         L.innerHTML = '';
-        if (out.view !== 'fluence' || out.map === 'tone') return;
+        if (refMode >= 3) return errorLegend(L, 'Digital HRC', () => (redraw = true));
+        if (out.map !== 'banded') return;
         const stops = [];
         for (let i = 0; i < 22; i++) stops.push(`${viridis(i / 21)} ${(i / 22) * 100}% ${((i + 1) / 22) * 100}%`);
         const ticks = ['−2.2', '−1.65', '−1.1', '−0.55', '0'];
-        const caption = 'log10(L · exposure), L = fluence / 2π, 10 bands per decade; opaque black, emitters red';
+        const caption = 'log10(L · exposure), L = fluence / 2π, 10 bands per decade; solids black, lights red';
         const b = el('div', { className: 'bar' });
         b.style.background = `linear-gradient(to right, ${stops.join(',')})`;
         L.append(b, el('div', { className: 'ticks' }, ...ticks.map((t) => el('span', { textContent: t }))), el('div', { className: 'caption', textContent: caption }));
@@ -936,10 +966,10 @@
         if (currentScene !== 0) p.set('scene', scenes[currentScene].id);
         for (const { spec } of controls) {
           if (!spec.url) continue;
-          const [name, def] = spec.url, v = spec.get();
+          const [name, def] = spec.url, v = name === 'N' && freeN ? freeN : spec.get();   // a test's resolution is not saved
           if (v !== def) p.set(name, typeof v === 'number' && !Number.isInteger(v) ? String(+v.toFixed(3)) : enc(v));
         }
-        if (out.exposure !== 2) p.set('exposure', String(out.exposure));
+        if (out.exposure !== 1) p.set('exposure', String(out.exposure));
         if (perfOpen) p.set('perf', '1');
         const qs = p.toString();
         history.replaceState(null, '', qs ? '?' + qs : location.pathname);
@@ -951,8 +981,8 @@
           const [name, def] = spec.url;
           spec.set(p.has(name) ? dec(p.get(name), def) : def);
         }
-        if (!PROBES.includes(cfg.N)) cfg.N = 512;
-        out.exposure = Number(p.get('exposure')) || 2;
+        if (!PROBES.includes(cfg.N)) cfg.N = 256;
+        out.exposure = Number(p.get('exposure')) || 1;
         perfOpen = p.get('perf') === '1';
         const s = p.get('scene') ?? '0';
         const byId = scenes.findIndex((x) => x.id === s);
@@ -988,10 +1018,12 @@
         @group(0) @binding(1) var<storage, read> A: array<f32>;
         @group(0) @binding(2) var<storage, read> E: array<f32>;
         struct Draw {
-          P: vec4f,   // N, exposure / 2π (fluence → mean radiance), map (0 tone, 1 banded), view (0 fluence, 1 scene)
-          Q: vec4f,   // canvas size in device pixels, dither (0 / 1), tint materials (0 / 1)
+          P: vec4f,   // N, exposure / 2π (fluence → mean radiance), map (0 linear, 1 sRGB, 2 banded), reference view
+          Q: vec4f,   // canvas size in device pixels, dither (0 / 1), scene (0 / 1)
+          R: vec4f,   // error clip (errors of at least it show magenta), unused
         }
         @group(0) @binding(3) var<uniform> D: Draw;
+        @group(0) @binding(4) var<storage, read> R: array<f32>;   // the reference's radiance per pixel
         const VIR = array<vec3f, 17>(${VIRIDIS.map((c) => `vec3f(${c.join(', ')})`).join(', ')});
         fn viridis(t: f32) -> vec3f {
           let s = clamp(t, 0.0, 1.0) * 16.0; let i = min(u32(s), 15u);
@@ -1007,35 +1039,49 @@
           let n = (hash(q) + hash(q + vec2f(17.3, 5.1)) - 1.0) / 255.0;
           return vec4f(c + n * D.Q.z, 1.0);
         }
+        // the error against the reference, (scheme − reference) / reference in displayed units (L · exposure, the reference
+        // floored at 0.01), on a log scale in bands of 0.1 decade: white at 1e-5 or less, darkest at 1; reds where the scheme
+        // is brighter, blues where darker (ColorBrewer RdBu, sRGB)
+        fn errorColour(fs: f32, fr: f32, k: f32, clip: f32) -> vec3f {
+          let e = (fs - fr) * k / max(fr * k, 0.01);
+          if (abs(e) >= clip) { return vec3f(0.85, 0.2, 0.78); }   // at least the clip the legend sets: magenta
+          let m = 3.0 * clamp((floor(log(max(abs(e), 1e-9)) / log(10.0) * 10.0) / 10.0 + 5.0) / 5.0, 0.0, 1.0);
+          var stops = array<vec3f, 4>(vec3f(1.0), vec3f(0.957, 0.647, 0.510), vec3f(0.839, 0.376, 0.302), vec3f(0.404, 0.0, 0.122));
+          if (e < 0.0) { stops = array<vec3f, 4>(vec3f(1.0), vec3f(0.573, 0.773, 0.871), vec3f(0.263, 0.576, 0.765), vec3f(0.020, 0.188, 0.380)); }
+          let i = min(u32(m), 2u);
+          return mix(stops[i], stops[i + 1u], m - f32(i));
+        }
         @fragment fn fs(@builtin(position) q: vec4f) -> @location(0) vec4f {
           let P = D.P;
           let N = i32(P.x); let cell = vec2i(floor(q.xy / D.Q.xy * P.x));
           let i = cell.x * N + (N - 1 - cell.y);
-          let a = A[i]; let e = E[i]; let f = max(F[i], 0.0) * P.y;
+          let a = A[i]; let e = E[i]; let fs = max(F[i], 0.0);
+          let fr = R[i] * 6.2831853;   // the reference, as fluence
+          let mode = i32(P.w);
+          let f = select(fr, fs, mode == 0) * P.y;
+          if (mode >= 3) {   // error views; solids show the scene's colours when it is on, else white
+            if (a > 0.0) { return vec4f(errorColour(fs, fr, P.y, D.R.x), 1.0); }
+            return vec4f(select(vec3f(1.0), select(vec3f(0.15, 0.3, 1.0), vec3f(1.0, 0.2, 0.15), e > 0.0), D.Q.w > 0.5), 1.0);
+          }
           var S = 0.0;   // the material's radiance, from E and A (see material() in the page)
           if (e > 0.0) { S = select(select(e, e / max(-log(a), 1e-6), a < 1.0), e, a <= 0.0); }
-          let opaque = a <= 0.0 || (e > 0.0 && a < 0.05);   // walls, and dense emitters drawn as surfaces of radiance S
-          if (P.w > 0.5) {   // the rasterised scene
-            var c = vec3f(0.04) + vec3f(0.55) * (1.0 - a);
-            if (e > 0.0) { c = vec3f(1.0, 0.75, 0.4) * min(1.0, 0.25 + select(e, S, a < 1.0)); }
-            return vec4f(c, 1.0);
-          }
-          if (P.z > 0.5) {   // banded
+          let opaque = a <= 0.0;   // solids: lights show their radiance, the rest dark slate
+          if (P.z > 1.5) {   // banded
             if (opaque) { return vec4f(select(vec3f(0.0), vec3f(0.85, 0.15, 0.1), e > 0.0), 1.0); }
             let lv = log(max(f, 1e-9)) / log(10.0);
             let t = (floor(lv * 10.0) / 10.0 + 2.2) / 2.2;
             return dither(srgb(viridis(t)), q.xy);
           }
-          let tint = D.Q.w > 0.5;   // emitters red, occluders blue, by how much of each the cell holds
-          if (opaque) {   // surfaces: their own emission, walls dark slate
+          let tint = D.Q.w > 0.5;   // the scene: lights red, solids blue, volumes by how much of the cell they hold
+          if (opaque) {
             if (e > 0.0) { return vec4f(select(srgb(vec3f(min(1.0, S * 1.25))), vec3f(1.0, 0.2, 0.15), tint), 1.0); }
             return vec4f(select(vec3f(0.11, 0.115, 0.13), vec3f(0.15, 0.3, 1.0), tint), 1.0);
           }
-          var c = srgb(vec3f(1.0 - exp(-f)));
+          var c = srgb(vec3f(select(1.0 - exp(-f), min(f, 1.0), P.z < 0.5)));
           if (tint) {
             if (e > 0.0) { c = mix(c, vec3f(1.0, 0.2, 0.15), 0.7); }
             else if (a < 1.0) { c = mix(c, vec3f(0.15, 0.3, 1.0), 0.25 + 0.6 * (1.0 - a)); }
-          } else if (a < 1.0) { c = mix(c, c * vec3f(0.8, 0.88, 1.0), 0.5); }   // media slightly cool
+          }
           return dither(c, q.xy);
         }`,
       });
@@ -1045,39 +1091,66 @@
         fragment: { module: drawModule, entryPoint: 'fs', targets: [{ format }] },
         primitive: { topology: 'triangle-list' },
       });
-      const drawU = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const drawU = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
-      let cascade = null, cascadeKey = '', drawBG = null;
+      let cascade = null, cascadeKey = '';
       function engine() {
         const key = JSON.stringify(cfg);
         if (key === cascadeKey) return cascade;
         if (cascade) for (const v of Object.values(cascade)) if (v instanceof GPUBuffer) v.destroy();
         const N = cfg.N;
-        cascade = new MomentHRC(device, N, { cellModel: 'square', halfFloatRays: cfg.halfFloatRays, splitRule: cfg.splitRule,
-          stochasticRounding: cfg.onePass ? 'onePass' : cfg.averagedRounding ? 'averaged' : 'off', opaqueLightKernel: cfg.opaqueLightKernel });
+        cascade = new DigitalHRC(device, N, { splitRule: cfg.splitRule, solidLights: cfg.solidLights });
         cascadeKey = key;
+        reference?.destroy();
+        reference = new Reference(device, N);
         E = new Float32Array(N * N);
         A = new Float32Array(N * N);
-        drawBG = device.createBindGroup({
-          layout: drawPipe.getBindGroupLayout(0),
-          entries: [cascade.fluenceBuffer, cascade.transmittanceBuffer, cascade.emissionBuffer, drawU].map((buffer, binding) => ({ binding, resource: { buffer } })),
-        });
         const mb = (cascade.rayBuffer.size + cascade.beyondSampleBuffer.size) / 2 ** 20;
         $('casc-info').textContent = `${N}² · ${mb.toFixed(0)} MB`;
         layout();
         return cascade;
       }
       function encodeDraw(enc, g) {
-        const mapId = { tone: 0, banded: 1 }[out.map];
+        const mapId = { linear: 0, srgb: 1, banded: 2 }[out.map];
         device.queue.writeBuffer(drawU, 0, new Float32Array([
-          g.N, out.exposure / (2 * Math.PI), mapId, out.view === 'scene' ? 1 : 0,
-          view.width, view.height, out.dither ? 1 : 0, out.tint ? 1 : 0,
+          g.N, out.exposure / (2 * Math.PI), mapId, refMode,
+          view.width, view.height, out.dither ? 1 : 0, out.scene ? 1 : 0,
+          errorClip < 0 ? 10 ** errorClip : 1e9, 0, 0, 0,
         ]));
+        const R = pathTracing() ? reference.pathTraceOutput : reference.exactOutput;
+        const drawBG = device.createBindGroup({
+          layout: drawPipe.getBindGroupLayout(0),
+          entries: [g.fluenceBuffer, g.transmittanceBuffer, g.emissionBuffer, drawU, R].map((buffer, binding) => ({ binding, resource: { buffer } })),
+        });
         const pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
         pass.setPipeline(drawPipe);
         pass.setBindGroup(0, drawBG);
         pass.draw(3);
         pass.end();
+      }
+
+      // ── reference ──
+      function setReference(v) {
+        refMode = v;
+        document.body.classList.toggle('locked', locked());
+        if (locked()) ((cursor = null), selectShape(null));
+        if (!(refMode === 2 || refMode === 4)) reference?.pauseExact();
+        touch();   // solve again (without the cursor's light) and give the reference this scene
+      }
+      const fmtTime = (ms) => (!isFinite(ms) ? '…' : ms < 60e3 ? `${(ms / 1000).toFixed(ms < 10e3 ? 1 : 0)} s` : `${Math.floor(ms / 60e3)} m ${Math.round((ms % 60e3) / 1000)} s`);
+      function renderRefStatus() {
+        const st = refMode === 2 || refMode === 4 ? reference?.exactProgress : null;
+        refStatus.textContent = !refMode ? ''
+          : pathTracing() ? `path trace · ${reference.pathTraceFrames * 16} samples per pixel`
+          : !st ? 'exact · starting…'
+          : st.done ? `exact · ${st.m} directions per pixel · took ${fmtTime(st.elapsedMs)}`
+          : `exact · ${(st.fraction * 100).toFixed(1)} % · ${fmtTime(st.etaMs)} left`;
+      }
+      // the reference's input: radiance and transmittance per pixel (see site/_shared/reference.ts)
+      function uploadReference() {
+        const S = new Float32Array(E.length);
+        for (let i = 0; i < E.length; i++) S[i] = A[i] > 0 && A[i] < 1 ? E[i] / -Math.log(A[i]) : E[i];
+        reference.upload(S, A);
       }
 
       // ── layout: the largest square in the canvas area, 32 px margin ──
@@ -1093,8 +1166,21 @@
 
       // ── frame loop: recompute only when the scene changed, redraw when the output settings changed ──
       let busy = false, cpuMs = 0, gpuMs = 0, solves = 0, frameMs = 0, solveN = 0;
+      // the selected shape's outline, in CSS pixels over the canvas
+      function placeSelection() {
+        const box = $('selection');
+        box.style.display = selected ? 'block' : 'none';
+        if (!selected) return;
+        const k = view.clientWidth / SPAN;
+        Object.assign(box.style, {
+          left: `${view.offsetLeft + (selected.x + SPAN / 2) * k - 1}px`, top: `${view.offsetTop + (selected.y + SPAN / 2) * k - 1}px`,
+          width: `${selected.w * k + 2}px`, height: `${selected.h * k + 2}px`,
+        });
+      }
       async function frame() {
         requestAnimationFrame(frame);
+        placeSelection();
+        if (refMode && reference && (reference.version !== drawnVersion || (pathTracing() && reference.pathTraceFrames < 1024))) redraw = true;
         if (busy || !(dirty || redraw)) return;
         busy = true;
         const solve = dirty;
@@ -1107,6 +1193,13 @@
           rasterise(g.N);
           g.upload(E, A);
           g.encodeAll(enc);
+        }
+        if (refMode) {
+          if (solve) uploadReference();
+          if (pathTracing() && reference.pathTraceFrames < 1024) reference.encodePathTrace(enc);
+          if (refMode === 2 || refMode === 4) reference.startExact(refDensity * g.N);
+          drawnVersion = reference.version;
+          renderRefStatus();
         }
         const t1 = performance.now();
         encodeDraw(enc, g);
@@ -1129,7 +1222,7 @@
         const g = engine(), enc = device.createCommandEncoder();
         encodeDraw(enc, g);
         device.queue.submit([enc.finish()]);
-        view.toBlob((b) => b && Object.assign(document.createElement('a'), { href: URL.createObjectURL(b), download: `moment-hrc-${scenes[currentScene].id}-${g.N}-${Date.now()}.png` }).click());
+        view.toBlob((b) => b && Object.assign(document.createElement('a'), { href: URL.createObjectURL(b), download: `digital-hrc-${scenes[currentScene].id}-${g.N}-${Date.now()}.png` }).click());
       }
       $('shot-btn').addEventListener('click', screenshot);
 
@@ -1175,11 +1268,10 @@
       const KEYS = [
         ['← →', 'previous / next scene'],
         ['⇧ 0–9', 'scene 0–9'],
-        ['1–5', 'pen: light, solid light, wall, medium, eraser'],
+        ['1–4', 'pen: light, solid, volume, eraser'],
         ['+ −', 'pen size'],
-        ['v', 'fluence / scene view'],
-        ['b', 'banded view'],
-        ['m', 'material tint (emitters red, occluders blue)'],
+        ['b', 'next map'],
+        ['v', 'scene (lights red, solids blue)'],
         ['n', 'new shape'],
         ['⌫', 'delete selected shape'],
         ['c', 'clear drawing'],
@@ -1292,19 +1384,18 @@
           if (e.shiftKey) {
             switchScene(+d[1]);
             changed();
-          } else if (+d[1] <= KINDS.length) ((pen.kind = KINDS[(+d[1] + KINDS.length - 1) % KINDS.length][0]), selectShape(null), touch());
+          } else if (!locked() && +d[1] >= 1 && +d[1] <= KINDS.length) (selectShape(null), setPen('kind', KINDS[+d[1] - 1][0]));
           return;
         }
         let handled = true;
         switch (e.key) {
-          case 'v': case 'V': out.view = out.view === 'scene' ? 'fluence' : 'scene'; redraw = true; changed(); break;
-          case 'm': case 'M': out.tint = !out.tint; redraw = true; changed(); break;
-          case 'b': case 'B': out.map = out.map === 'banded' ? 'tone' : 'banded'; redraw = true; changed(); break;
+          case 'v': case 'V': out.scene = !out.scene; redraw = true; changed(); break;
+          case 'b': case 'B': out.map = { linear: 'srgb', srgb: 'banded', banded: 'linear' }[out.map]; redraw = true; changed(); break;
           case '?': toggleHelp(); break;
           case 'Escape': toggleHelp(false); selectShape(null); break;
           case '=': case '+': stepPenSize(1); break;
           case '-': case '_': stepPenSize(-1); break;
-          case 'c': case 'C': strokes = []; touch(); break;
+          case 'c': case 'C': if (!locked()) ((strokes = []), touch()); break;
           case 's': case 'S': screenshot(); break;
           case 'f': case 'F':
             if (document.fullscreenElement) document.exitFullscreen();
@@ -1319,6 +1410,7 @@
           case 'ArrowRight': switchScene(currentScene + 1); changed(); break;
           case 'ArrowLeft': switchScene(currentScene - 1); changed(); break;
           case 'n': case 'N':
+            if (locked()) break;
             shapes.push({ x: -30, y: -30, w: 60, h: 60, ...(pen.kind === 'eraser' ? { rgb: [0, 0, 0], opacity: 1 } : penMaterial()) });
             selectShape(shapes.at(-1));
             touch();
@@ -1358,6 +1450,7 @@
       };
       let drawing = false, drag = null, last = null;
       view.addEventListener('pointerdown', (e) => {
+        if (locked()) return;
         const p = toScene(e);
         view.setPointerCapture(e.pointerId);
         const s = shapeAt(p);
@@ -1386,6 +1479,7 @@
         touch();
       }
       view.addEventListener('pointermove', (e) => {
+        if (locked()) return;
         const p = toScene(e);
         cursor = p;
         if (drag) Object.assign(drag.s, { x: p[0] + drag.dx, y: p[1] + drag.dy });
@@ -1407,9 +1501,13 @@
         cursor = null;
         touch();
       });
+      // a click beside the square deselects
+      $('canvas-area').addEventListener('pointerdown', (e) => {
+        if (e.target === $('canvas-area')) selectShape(null);
+      });
 
       // hooks for scripts
-      window.momentHRC = { cfg, out, device, engine, touch, bench, stats: () => ({ cpuMs, gpuMs, solves, frameMs }), scene: () => ({ shapes, strokes, E, A }) };
+      window.digitalHRC = { cfg, out, device, engine, touch, bench, reference: () => reference, stats: () => ({ cpuMs, gpuMs, solves, frameMs }), scene: () => ({ shapes, strokes, E, A }) };
 
       // ── Init ──
       const initScene = loadURL();

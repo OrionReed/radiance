@@ -11,6 +11,7 @@ interface Page {
   title: string;
   description: string;
   section: string; // from <meta name="section">; '' for the main list
+  order: number; // from <meta name="order">; pages without one come after, by name
 }
 
 function findPages(): Page[] {
@@ -21,9 +22,10 @@ function findPages(): Page[] {
       const title = html.match(/<title>([^<]*)<\/title>/)?.[1] ?? d.name;
       const description = html.match(/<meta\s+name="description"\s+content="([^"]*)"/)?.[1] ?? '';
       const section = html.match(/<meta\s+name="section"\s+content="([^"]*)"/)?.[1] ?? '';
-      return { name: d.name, title, description, section };
+      const order = Number(html.match(/<meta\s+name="order"\s+content="([^"]*)"/)?.[1] ?? Infinity);
+      return { name: d.name, title, description, section, order };
     })
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
 }
 
 const escape = (s: string) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);

@@ -55,12 +55,15 @@
       <h1>Polygonal extensions</h1>
       <div class="field"><div class="label">view</div><div class="seg" id="frame"></div></div>
       <div class="field"><div class="label" id="length-label">tile length</div><div class="seg" id="length"></div></div>
-      <div class="field" data-views="fan tile"><div class="label">extension rule</div><div class="seg" id="scheme"></div></div>
+      <div class="field"><div class="label">extension rule</div><div class="seg" id="scheme"></div></div>
       <div class="field" data-views="fan tile"><div class="label"><span>depth</span><span class="val" id="depth-val"></span></div><input type="range" id="depth" min="0" step="1" /></div>
       <div class="field" data-views="fan intervals"><div class="label"><span>probe column</span><span class="val" id="probe-val"></span></div><input type="range" id="probe" min="0" step="1" /></div>
       <div class="field" data-views="intervals"><div class="label">directions</div><div class="seg" id="directions"></div></div>
       <div class="field"><div class="label">pixels</div><div class="seg" id="pixels"></div></div>
       <div class="field" data-views="fan tile"><div class="label">apexes</div><div class="seg" id="apexes"></div></div>
+      <div class="field" data-views="intervals"><div class="label">extension pieces of length</div><div class="seg" id="pieces"></div></div>
+      <div class="field" data-views="fan intervals"><div class="label">reprojection error</div><div class="seg" id="error"></div></div>
+      <div class="field" id="placing-field"><div class="label">reader</div><div class="seg" id="placing"></div></div>
       <div id="key"></div>
       <div id="readout"></div>
     </aside>
@@ -79,19 +82,24 @@
       //     a pixel is shown in the tile that holds its centre. The only centres on a tile edge are those on the diagonals,
       //     which the next quadrant shares, so each of those pixels is half in this quadrant.
       //   partition: pieces all the way down to single pixels, so each pixel belongs to exactly one cone (as in
-      //     ResonanceCausality's twilight, src/extension.rs). A line is a strip one pixel tall from a start pixel with some
+      //     Resonance's twilight). A line is a strip one pixel tall from a start pixel with some
       //     rise; it splits into its two halves. A cone whose direction is even counting away from the middle (d >= 0 even,
       //     d < 0 odd) splits into three lines: its first half and two second halves one row apart. Any other cone splits
       //     into two cones, its first and second half. Halving rounds toward zero. A cone of length 2 on a diagonal adds a
       //     line one row further out at half weight: the pixels on the diagonal.
-      // A probe reads cones cascade by cascade, merged as polygonal-hrc.js does: a cone of cascade n (s = 2^n) whose apex
+      // A probe reads cones cascade by cascade, merged as Polygonal HRC does: a cone of cascade n (s = 2^n) whose apex
       // column over s is even reads cascade n + 1 at the same apex; any other reads half a cone one step back along its
       // edge and half one a step forward, and covers the interval between, [2s, 3s), with two tiles of length s. Which
-      // cones re-root depends on their apex columns, so on the probe's column: at column 0 none do.
+      // cones re-root depends on their apex columns, so on the probe's column.
+      // Reprojection error (Alexander's): a tile covering distances [near, far] along its axis from a reader holds light
+      // whose apparent size from there, about 1 / distance, varies by (max - min) / value at the middle,
+      // (1 / near - 1 / far) (near + far) / 2. Measured directly, it is the same ratio over the angles the tile's pixels
+      // subtend from the reader, with their mean in the middle.
       const $ = (id) => document.getElementById(id);
       const views = { main: $('view'), steps: $('steps') };
 
-      const state = { L: 8, scheme: 'cover', probe: 0, depth: 1, pixels: 'tiles', frame: 'fan', apexes: false, allDirections: false, direction: 3, hovered: null };
+      const state = { L: 8, scheme: 'cover', probe: 0, depth: 1, pixels: 'tiles', frame: 'fan', apexes: false, allDirections: false,
+                      direction: 3, pieces: 0, error: false, placing: false, reader: null, hovered: null };
       const LENGTHS = [2, 4, 8, 16, 32, 64];
       const oklch = (l, c, h, a = 1) => `oklch(${l} ${c} ${h} / ${a})`;
       const ROLES = [
@@ -105,19 +113,41 @@
       const SHORT = (a) => oklch(0.7, 0.17, 20, a);
       const roleColor = (role, a = 1) => (!(role >= 0) ? INK(a) : oklch(ROLES[role].l, ROLES[role].c, ROLES[role].hue, a));
 
+      // tiles: {X, ay, d, L} a cone tile from a pixel corner, {kind: 'line', X, y, d, L} a partition line
       const tileKey = (t) => `${t.kind ?? 'cone'},${t.X},${t.kind === 'line' ? t.y : t.ay},${t.d},${t.L}`;
       const slopes = (t) => [t.d / t.L, (t.d + 1) / t.L];
       const apex = (t) => [t.X - t.L, t.ay];
+      const apexLabel = (t) => `${t.X - t.L}, ${t.ay}`;
+      // the columns the tile spans
+      const span = (t) => [t.X, t.X + t.L];
       // the tile's lower and upper edge at column x
-      const at = (t, x) => slopes(t).map((s) => t.ay + s * (x - t.X + t.L));
+      const at = (t, x) => { const [ax, ay] = apex(t); return slopes(t).map((s) => ay + s * (x - ax)); };
       const corners = (t) => {
         if (t.kind === 'line') return [[t.X, t.y], [t.X + t.L, t.y + t.d], [t.X + t.L, t.y + t.d + 1], [t.X, t.y + 1]];
-        const [lo0, hi0] = at(t, t.X), [lo1, hi1] = at(t, t.X + t.L);
-        return [[t.X, lo0], [t.X + t.L, lo1], [t.X + t.L, hi1], [t.X, hi0]];
+        const [x0, x1] = span(t), [lo0, hi0] = at(t, x0), [lo1, hi1] = at(t, x1);
+        return [[x0, lo0], [x1, lo1], [x1, hi1], [x0, hi0]];
       };
+
+      // the pixels a tile holds, with their weights: a partition tile's pieces down to single pixels, a cover tile's pixels
+      // by their centres
+      function tileCells(t) {
+        if (state.scheme === 'partition') {
+          const weights = new Map(), descend = (p, w) => {
+            if (p.L > 1) { for (const c of partitionHalves(p)) descend(c, w * (c.weight ?? 1)); return; }
+            const key = p.kind === 'line' ? `${p.X},${p.y}` : `${p.X},${p.ay + p.d}`;
+            weights.set(key, (weights.get(key) ?? 0) + w);
+          };
+          descend(t, 1);
+          return [...weights].map(([key, w]) => [...key.split(',').map(Number), w]);
+        }
+        const [, , y0, y1] = bounds([t]), out = [];
+        for (let x = t.X; x < t.X + t.L; x++) for (let y = y0; y < y1; y++) if (contains(t, x + 0.5, y + 0.5)) out.push([x, y, 1]);
+        return out;
+      }
+
       function halves(t) {
         if (t.L === 1) return [];
-        if (state.scheme === 'partition') return twilightHalves(t);
+        if (state.scheme === 'partition') return partitionHalves(t);
         const h = t.L / 2, q = Math.floor(t.d / 2), y = t.ay + t.d;
         return [
           { X: t.X, ay: y - q, d: q, L: h, role: 0 },
@@ -126,7 +156,7 @@
         ];
       }
 
-      function twilightHalves(t) {
+      function partitionHalves(t) {
         const h = t.L / 2, c = Math.trunc(t.d / 2);
         if (t.kind === 'line') {
           return [
@@ -156,7 +186,7 @@
           const byCone = new Map();
           for (const t of fan(m)) {
             const weights = new Map(), descend = (p, w) => {
-              if (p.L > 1) { for (const c of twilightHalves(p)) descend(c, w * (c.weight ?? 1)); return; }
+              if (p.L > 1) { for (const c of partitionHalves(p)) descend(c, w * (c.weight ?? 1)); return; }
               const key = p.kind === 'line' ? `${p.X},${p.y}` : `${p.X},${p.ay + p.d}`;
               weights.set(key, (weights.get(key) ?? 0) + w);
             };
@@ -184,35 +214,37 @@
       // the fan: every direction of the apex (0, 0) at length L
       const fan = (L) => Array.from({ length: 2 * L }, (_, i) => ({ X: L, ay: 0, d: i - L, L }));
 
-      // the cones the probe reads in one direction of length L, cascade by cascade, as polygonal-hrc.js merges them. Each
+      // the cones the probe reads in one direction of length L, cascade by cascade, as Polygonal HRC merges them. Each
       // cone has the weight its value is read with (weight) and the weight its own tile's light is read with (lit): a cone
       // that a re-rooted merge reaches one step back gates with its own tile, but the light there comes from the interval
       // between instead. Cascade 0 also reads the pixel next to the probe. chain(n) is the direction followed at cascade n;
       // the tree stops at cascade top: what those cones' own merges read is not shown.
+      // Each cone also lists the apexes it was merged from (from).
       function probeTreeChain(chain, top) {
         const levels = [];
-        let cones = new Map([[`${state.probe},0`, { apex: [state.probe, 0], weight: 1, lit: 1 }]]);
+        let cones = new Map([[`${state.probe},0`, { apex: [state.probe, 0], weight: 1, lit: 1, from: [] }]]);
         for (let n = 0; n <= top; n++) {
           const s = 2 ** n, d = chain(n), level = [], next = new Map();
-          const add = (apex, weight, lit) => {
-            const c = next.get(`${apex}`);
-            if (c) { c.weight += weight; c.lit += lit; } else next.set(`${apex}`, { apex, weight, lit });
-          };
-          for (const { apex: [x, y], weight, lit } of cones.values()) {
+          const add = mergeInto(next);
+          for (const { apex: [x, y], weight, lit, from } of cones.values()) {
             const reRooted = ((x >> n) & 1) === 1;
             const tiles = [{ X: x + s, ay: y, d, L: s, cascade: n, weight, lit }];
             if (reRooted && n < top) for (const k of [0, 1]) tiles.push({ X: x + 2 * s, ay: y + d + k, d, L: s, cascade: n, weight, lit: weight, between: true });
-            level.push({ n, apex: [x, y], d, weight, lit, reRooted, tiles });
+            level.push({ n, apex: [x, y], d, weight, lit, reRooted, from, tiles });
             if (n === top) continue;
             const half = chain(n + 1) - 2 * d;
-            if (!reRooted) add([x, y], weight, weight);
-            else { add([x - s, y - d - half], weight / 2, 0); add([x + s, y + d + half], weight / 2, weight / 2); }
+            if (!reRooted) add([x, y], weight, weight, [x, y]);
+            else { add([x - s, y - d - half], weight / 2, 0, [x, y]); add([x + s, y + d + half], weight / 2, weight / 2, [x, y]); }
           }
           levels.push(level);
           cones = next;
         }
         return levels;
       }
+      const mergeInto = (next) => (apex, weight, lit, parent) => {
+        const c = next.get(`${apex}`);
+        if (c) { c.weight += weight; c.lit += lit; c.from.push(parent); } else next.set(`${apex}`, { apex, weight, lit, from: [parent] });
+      };
       // the tree for a direction of length L
       const probeTree = (direction) => { const N = Math.log2(state.L); return probeTreeChain((n) => direction >> (N - n), N); };
       // every cone the probe reads in its first `count` intervals, over all directions, by cascade
@@ -325,12 +357,15 @@
       }
       // the pixels of cones from a pixel-corner apex: by centre for the cover rule, by its own pieces for the partition rule.
       // Hue from direction, the selected direction strongest, faded by the weight its light is read with
+      const directionColor = (t, lit) => {
+        const hue = 300 - 120 * ((t.d + 0.5) / t.L + 1);
+        return t.d === state.direction ? oklch(0.68, 0.13, hue, lit) : oklch(t.d % 2 ? 0.33 : 0.38, 0.05, hue, lit);
+      };
       function drawTilePixels(tiles) {
         for (const t of tiles) {
           const lit = t.lit ?? 1;
           if (!lit) continue;
-          const [ax, ay] = apex(t), m = t.L, hue = 300 - 120 * ((t.d + 0.5) / m + 1);
-          const color = t.d === state.direction ? oklch(0.68, 0.13, hue, lit) : oklch(t.d % 2 ? 0.33 : 0.38, 0.05, hue, lit);
+          const [ax, ay] = apex(t), m = t.L, color = directionColor(t, lit);
           const paint = (x, y, w) => (w === 1 ? cell(ax + x, ay + y, color) : halfCell(ax + x, ay + y, color, y < 0));
           if (state.scheme === 'partition') {
             for (const [x, y, w] of partitionPixels(m).get(t.d)) paint(x, y, w);
@@ -350,8 +385,8 @@
       // a ring when the pixel is also in the tile), from 8 x 8 samples
       function drawCoverage(root, parts) {
         const S = 8;   // samples per pixel side
-        const [, , y0, y1] = bounds(parts.concat(root));
-        for (let x = root.X; x < root.X + root.L; x++) for (let y = y0; y < y1; y++) {
+        const [, , y0, y1] = bounds(parts.concat(root)), [x0, x1] = span(root);
+        for (let x = x0; x < x1; x++) for (let y = y0; y < y1; y++) {
           let inRoot = 0, onlyParts = 0, onlyRoot = 0;
           for (let i = 0; i < S; i++) for (let j = 0; j < S; j++) {
             const px = x + (i + 0.5) / S, py = y + (j + 0.5) / S, inParts = parts.some((t) => contains(t, px, py));
@@ -362,8 +397,12 @@
           if (onlyRoot) { const r = Math.sqrt(onlyRoot / (S * S)) * 0.5; ctx.fillStyle = SHORT(0.9); ctx.fillRect(sx(x + 0.5 - r), sy(y + 0.5 + r), 2 * r * view.scale, 2 * r * view.scale); }
         }
       }
-      function drawParts(parts, width = 1.5) {
-        for (const t of parts) polygon(t, roleColor(t.role, 0.95), roleColor(t.role, 0.1), width);
+      // plain: outlines only, without the part each piece is of its parent
+      function drawParts(parts, width = 1.5, plain = false) {
+        for (const t of parts) {
+          if (plain) polygon(t, INK(0.7), null, width);
+          else polygon(t, roleColor(t.role, 0.95), roleColor(t.role, 0.1), width);
+        }
       }
       function drawApexes(tiles) {
         for (const t of tiles.filter((t) => t.kind !== 'line')) {
@@ -412,45 +451,143 @@
       let mainView;
       // the probe's intervals: the boundaries between them, the probe's own cone edges, and the cones it reads (in one
       // direction, or all), filled by the weight their light is read with
+      // The merge tree: an arrow from each cone's apex to the apexes of the cones it reads at the next cascade when they
+      // are elsewhere, and a ring per cascade read at the same apex. Extension pieces: each tile drawn as its pieces of a
+      // given length. Reprojection error: each tile coloured by its closed-form error from the reader.
       function drawProbe(box) {
-        const N = Math.log2(state.L), x0 = state.probe;
+        const N = Math.log2(state.L), x0 = state.probe, P = probePoint(), R = readerPoint();
         const { tiles, cones } = probeIntervals(N + 1), chosen = probeTreeChain(selectedChain, N);
         const shown = (state.allDirections ? tiles : chosen.map((level) => level.flatMap((c) => c.tiles))).map((level) => level.filter((t) => t.lit));
-        view = mainView = fit(fitFrame(bounds(shown.flat(), chosen.flat().map((c) => c.apex).concat([[x0, 0]]))), box, 24 * dpr);
+        view = mainView = fit(fitFrame(bounds(shown.flat(), chosen.flat().map((c) => c.apex).concat([P]))), box, 24 * dpr);
         drawDots(box);
         // where the pieces it reads begin and end: stored cones sit on a lattice (a cascade-n piece spans columns that are
         // multiples of 2^n), so relative to the probe these columns move with it
         const joins = new Map([[x0, [-1, 1]]]);
-        for (const t of shown.flat()) for (const x of [t.X, t.X + t.L]) {
+        for (const t of shown.flat()) for (const x of span(t)) {
           const [lo, hi] = at(t, x), j = joins.get(x) ?? [Infinity, -Infinity];
           joins.set(x, [Math.min(j[0], lo), Math.max(j[1], hi)]);
         }
         for (const [x, [lo, hi]] of joins) line([x, lo - 1.5], [x, hi + 1.5], INK(0.22), 2.5);
+        // the probe's own cone edges, over the distances where it reads cascade n's directions when nothing re-roots
         for (let n = 0; n <= N; n++) {
-          const s = 2 ** n, d = selectedChain(n);
-          for (let k = -s; k <= s; k++) if (state.allDirections || k === d || k === d + 1) line([x0 + s, k], [x0 + 2 * s, 2 * k], INK(0.25), 1);
+          const s = 2 ** n, d = selectedChain(n), [b0, b1] = [s, 2 * s];
+          for (let k = -s; k <= s; k++) if (state.allDirections || k === d || k === d + 1) line([P[0] + b0, P[1] + (k * b0) / s], [P[0] + b1, P[1] + (k * b1) / s], INK(0.25), 1);
         }
-        if (pixelMode() === 'tiles') {
-          for (const t of shown.flat()) {
-            const [, , y0, y1] = bounds([t]);
-            for (let x = t.X; x < t.X + t.L; x++) for (let y = y0; y < y1; y++) if (contains(t, x + 0.5, y + 0.5)) cell(x, y, cascadeColor(t.cascade, 0.1 + 0.35 * t.lit));
-          }
-        }
+        if (pixelMode() === 'tiles' && !state.error) for (const t of shown.flat()) for (const [x, y] of tileCells(t)) cell(x, y, cascadeColor(t.cascade, 0.1 + 0.35 * t.lit));
         cell(x0, selectedChain(0), INK(0.3));
-        shown.forEach((level) => { for (const t of level) polygon(t, cascadeColor(t.cascade, 0.9), cascadeColor(t.cascade, 0.04 + 0.16 * t.lit), 1.3, t.between ? [5, 3] : []); });
+        if (state.error) drawErrors(shown.flat(), R);
+        const fill = (t) => (state.error ? null : cascadeColor(t.cascade, 0.04 + 0.16 * t.lit));
+        shown.forEach((level) => { for (const t of level) polygon(t, cascadeColor(t.cascade, 0.9), fill(t), 1.3, t.between ? [5, 3] : []); });
+        // cones whose own tile only gates: the light over it comes through other tiles
+        if (!state.allDirections) for (const t of chosen.flat().flatMap((c) => c.tiles)) if (!t.lit) polygon(t, INK(0.45), null, 1, [1.5, 3]);
+        if (state.pieces) for (const t of shown.flat()) {
+          const depth = Math.log2(t.L / state.pieces);
+          if (depth > 0) drawParts(tilesAtDepth(t, Math.max(depth, 0)), 1, true);
+        }
         if (state.allDirections) for (const t of chosen.flat().flatMap((c) => c.tiles)) if (t.lit) polygon(t, INK(0.95), null, 2, t.between ? [5, 3] : []);
+        for (const c of chosen.flat()) for (const p of c.from) {
+          const a = p, b = c.apex;
+          if (a[0] === b[0] && a[1] === b[1]) circle(b, cascadeColor(c.n, 0.85), 4 + 2.5 * c.n);
+          else arrow(a, b, cascadeColor(c.n, 0.9));
+        }
         for (const c of chosen.flat()) dot(c.apex, cascadeColor(c.n), 1.5 + 3 * c.weight);
         if (state.hovered) polygon(state.hovered, INK(0.95), INK(0.1), 2);
-        dot([x0, 0], INK(0.95), 4.5);
+        dot(P, INK(0.95), 4.5);
+        if (state.error) drawReader(R);
         const counted = state.allDirections ? cones : chosen;
         const lines = [`probe    column ${x0}, binary ${x0.toString(2)}`, `${state.allDirections ? 'all directions' : `direction ${state.direction} of length ${state.L}`}`];
-        const offsets = [...joins.keys()].map((x) => x - x0).filter((r) => r > 0).sort((a, b) => a - b);
+        const offsets = [...joins.keys()].map((x) => x - Math.ceil(P[0])).filter((r) => r > 0).sort((a, b) => a - b);
         for (let i = 0; i < offsets.length; i += 8) lines.push(`${i ? '' : 'joins at'.padEnd(9)}`.padEnd(9) + offsets.slice(i, i + 8).map((r) => `+${r}`).join(' '));
-        lines.push('', 'cascade  cones  re-rooted');
-        counted.forEach((level, n) => lines.push(`${String(n).padEnd(9)}${String(level.length).padEnd(7)}${level.filter((c) => c.reRooted).length}`));
+        // how each cascade's cones were reached from the one before
+        lines.push('', 'cascade  cones  same apex  re-rooted');
+        counted.forEach((level, n) => {
+          const same = level.filter((c) => c.from.some((p) => `${p}` === `${c.apex}`)).length, moved = level.filter((c) => c.from.some((p) => `${p}` !== `${c.apex}`)).length;
+          lines.push(`${String(n).padEnd(9)}${String(level.length).padEnd(7)}${String(same).padEnd(11)}${moved}`);
+        });
+        if (state.error) lines.push('', ...errorTable(chosen.flat().flatMap((c) => c.tiles).filter((t) => t.lit), R));
         const h = state.hovered;
-        if (h) lines.push('', `hovered  cascade ${h.cascade}, apex ${h.X - h.L}, ${h.ay}`, h.between ? `         between, light ${h.lit}` : `         value ${h.weight}, light ${h.lit}`);
+        if (h) {
+          lines.push('', `hovered  cascade ${h.cascade}, apex ${apexLabel(h)}`, h.between ? `         between, light ${h.lit}` : `         value ${h.weight}, light ${h.lit}`);
+          if (state.error) lines.push(`         error ${fmt(closedError(h, R))}, pixels ${fmt(directError(h, R))}`);
+        }
         $('readout').textContent = lines.join('\n');
+      }
+      function circle([x, y], color, radius) {
+        ctx.strokeStyle = color; ctx.lineWidth = 1.2 * dpr;
+        ctx.beginPath(); ctx.arc(sx(x), sy(y), radius * dpr, 0, 2 * Math.PI); ctx.stroke();
+      }
+      function arrow(a, b, color) {
+        line(a, b, color, 1.4, [4, 3]);
+        const ang = Math.atan2(sy(b[1]) - sy(a[1]), sx(b[0]) - sx(a[0])), r = 7 * dpr, bx = sx(b[0]) - Math.cos(ang) * 4 * dpr, by = sy(b[1]) - Math.sin(ang) * 4 * dpr;
+        ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(bx, by);
+        ctx.lineTo(bx - r * Math.cos(ang - 0.4), by - r * Math.sin(ang - 0.4)); ctx.lineTo(bx - r * Math.cos(ang + 0.4), by - r * Math.sin(ang + 0.4));
+        ctx.closePath(); ctx.fill();
+      }
+      function drawReader([x, y]) {
+        const r = 7 * dpr;
+        ctx.strokeStyle = INK(0.95); ctx.lineWidth = 1.5 * dpr;
+        ctx.beginPath(); ctx.moveTo(sx(x) - r, sy(y)); ctx.lineTo(sx(x) + r, sy(y)); ctx.moveTo(sx(x), sy(y) - r); ctx.lineTo(sx(x), sy(y) + r); ctx.stroke();
+        circle([x, y], INK(0.95), 7);
+      }
+
+      // ── reprojection error ──
+      const probePoint = () => [state.probe, 0];
+      const readerPoint = () => state.reader ?? probePoint();
+      // the distances along the tile's axis (its middle direction) from the reader to the tile's near and far faces, in
+      // columns: the reader is projected onto the axis
+      function faces(t, R) {
+        const [s0, s1] = slopes(t), m = (s0 + s1) / 2, [ax, ay] = apex(t), [x0, x1] = span(t);
+        const behind = (ax - R[0] + m * (ay - R[1])) / (1 + m * m);
+        return { near: x0 - ax + behind, far: x1 - ax + behind };
+      }
+      function closedError(t, R) {
+        const { near, far } = faces(t, R);
+        return near > 0 ? ((1 / near - 1 / far) * (near + far)) / 2 : Infinity;
+      }
+      // the angle pixel (x, y) subtends from R: the spread of its corners' directions about the direction to its centre
+      function pixelAngle(x, y, R) {
+        const cx = x + 0.5 - R[0], cy = y + 0.5 - R[1];
+        if (Math.abs(cx) < 0.5 && Math.abs(cy) < 0.5) return Infinity;
+        let lo = Infinity, hi = -Infinity;
+        for (const [px, py] of [[x, y], [x + 1, y], [x, y + 1], [x + 1, y + 1]]) {
+          const dx = px - R[0], dy = py - R[1], a = Math.atan2(cx * dy - cy * dx, cx * dx + cy * dy);
+          lo = Math.min(lo, a); hi = Math.max(hi, a);
+        }
+        return hi - lo;
+      }
+      // (max - min) / mean of the angles the tile's pixels subtend from R
+      function directError(t, R) {
+        const angles = tileCells(t).filter(([, , w]) => w > 0).map(([x, y]) => pixelAngle(x, y, R));
+        if (!angles.length || angles.some((a) => !isFinite(a))) return Infinity;
+        return ((Math.max(...angles) - Math.min(...angles)) * angles.length) / angles.reduce((a, b) => a + b, 0);
+      }
+      const ERROR_TOP = 2;
+      const errorColor = (e, a = 1) => {
+        if (!isFinite(e)) return SHORT(a);
+        const u = Math.min(e / ERROR_TOP, 1);
+        return oklch(0.34 + 0.56 * u, 0.12, 260 - 170 * u, a);
+      };
+      const fmt = (e) => (isFinite(e) ? e.toFixed(3) : 'inf');
+      function drawErrors(tiles, R) {
+        ctx.font = `${10 * dpr}px ${getComputedStyle(document.body).getPropertyValue('--mono')}`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        for (const t of tiles) {
+          polygon(t, null, errorColor(closedError(t, R), 0.6));
+        }
+        for (const t of tiles) {
+          const [x0, x1] = span(t), mid = (x0 + x1) / 2, [lo, hi] = at(t, mid);
+          if ((x1 - x0) * view.scale < 34 * dpr || (hi - lo) * view.scale < 12 * dpr) continue;
+          ctx.fillStyle = INK(0.95); ctx.fillText(fmt(closedError(t, R)), sx(mid), sy((lo + hi) / 2));
+        }
+      }
+      // closed form and pixels, per tile
+      function errorTable(tiles, R) {
+        const rows = ['reprojection error from the reader', 'n  apex     near  far    error  pixels'];
+        for (const t of tiles) {
+          const { near, far } = faces(t, R);
+          rows.push(`${String(t.cascade).padEnd(3)}${apexLabel(t).padEnd(9)}${near.toFixed(1).padEnd(6)}${far.toFixed(1).padEnd(7)}${fmt(closedError(t, R)).padEnd(7)}${fmt(directError(t, R))}`);
+        }
+        return rows;
       }
       function drawMain() {
         const box = prepare(views.main);
@@ -461,13 +598,15 @@
         const partsOf = roots.map((root) => tilesAtDepth(root, state.depth)), parts = partsOf.flat();
         const apexTiles = state.apexes ? roots.concat(parts).filter((t) => t.kind !== 'line') : [];
         const apexes = [...new Map(tiles.map((t) => [`${apex(t)}`, apex(t)])).values()];
-        const content = fanView ? bounds(tiles.concat(parts), [[state.probe, 0]])
+        const content = fanView ? bounds(tiles.concat(parts), [probePoint()])
           : bounds(Array.from({ length: Math.log2(L) + 1 }, (_, k) => tilesAtDepth(roots[0], k)).flat());
         view = mainView = fit(fitFrame(content), box, 24 * dpr);
         drawDots(box);
         if (fanView && apexes.length === 1) for (const [ax, ay] of apexes) for (const s of [1, -1]) line([ax, ay], [ax + 2 * L + 1, ay + s * (2 * L + 1)], INK(0.3), 1, [4, 4]);
 
-        if (pixelMode() === 'tiles') drawTilePixels(tiles);
+        const showError = fanView && state.error;
+        if (showError) drawErrors(tiles, readerPoint());
+        else if (pixelMode() === 'tiles') drawTilePixels(tiles);
         else if (pixelMode() === 'coverage') roots.forEach((root, i) => drawCoverage(root, partsOf[i]));
 
         for (const t of tiles) polygon(t, INK(0.14), null);
@@ -476,7 +615,8 @@
         roots.forEach((root, i) => (state.depth ? drawEdges(root, partsOf[i]) : polygon(root, INK(0.95), null, 2)));
         if (state.hovered && !roots.some((r) => tileKey(r) === tileKey(state.hovered))) polygon(state.hovered, INK(0.95), INK(0.1), 2);
         if (fanView) for (const a of apexes) dot(a, INK(0.6), 2.5);
-        if (fanView) dot([state.probe, 0], INK(0.9), Math.max(3, Math.min(view.scale * 0.12 / dpr, 6)));
+        if (fanView) dot(probePoint(), INK(0.9), Math.max(3, Math.min(view.scale * 0.12 / dpr, 6)));
+        if (showError) drawReader(readerPoint());
         readout(fanView ? read.filter((t) => t.d === state.direction) : roots, parts);
       }
 
@@ -514,12 +654,17 @@
         const lines = [`tile     d ${root.d}, length ${root.L}`];
         if (state.frame === 'fan' && (roots.length > 1 || state.probe !== 0)) {
           lines.push(`probe ${state.probe} reads it from`, 'apex     value  light');
-          for (const r of roots) lines.push(`${`${r.X - r.L}, ${r.ay}`.padEnd(9)}${String(r.weight).padEnd(7)}${r.lit}`);
+          for (const r of roots) lines.push(`${apexLabel(r).padEnd(9)}${String(r.weight).padEnd(7)}${r.lit}`);
         }
         lines.push(`depth ${state.depth}  ${parts.length} pieces, ${uses} uses`);
         const h = state.hovered;
+        if (state.frame === 'fan' && state.error) {
+          const R = readerPoint();
+          lines.push('', ...errorTable(roots.map((r) => ({ ...r, cascade: Math.log2(r.L) })), R));
+          if (h && h.role === undefined) lines.push('', `hovered  error ${fmt(closedError(h, R))}, pixels ${fmt(directError(h, R))}`);
+        }
         if (h?.kind === 'line') lines.push('', `hovered  line from ${h.X}, ${h.y}  rise ${h.d}`, `         length ${h.L}${h.uses !== 1 ? `, used ${h.uses} times` : ''}`);
-        else if (h) lines.push('', `hovered  apex ${h.X - h.L}, ${h.ay}  d ${h.d}`, `         length ${h.L}${h.uses !== undefined && h.uses !== 1 ? `, used ${h.uses} times` : ''}`, ...(h.weight !== undefined && state.probe !== 0 ? [`         value ${h.weight}, light ${h.lit}`] : []));
+        else if (h) lines.push('', `hovered  apex ${apexLabel(h)}  d ${h.d}`, `         length ${h.L}${h.uses !== undefined && h.uses !== 1 ? `, used ${h.uses} times` : ''}`, ...(h.weight !== undefined && state.probe !== 0 ? [`         value ${h.weight}, light ${h.lit}`] : []));
         $('readout').textContent = lines.join('\n');
       }
 
@@ -539,11 +684,15 @@
         state.direction = Math.min(Math.max(state.direction, -state.L), state.L - 1);
         state.depth = Math.min(state.depth, Math.log2(state.L));
         state.probe = Math.min(state.probe, state.L);
+        if (state.pieces > state.L / 2) state.pieces = 0;
       });
       segmented('scheme', [['cover', 'cover'], ['partition', 'partition']], 'scheme');
+      segmented('error', [[false, 'off'], [true, 'on']], 'error', () => { if (!state.error) state.placing = false; });
+      segmented('placing', [[false, 'at the probe'], [true, 'click']], 'placing', () => { if (!state.placing) state.reader = null; });
       segmented('directions', [[false, 'selected'], [true, 'all']], 'allDirections');
       segmented('pixels', [['tiles', 'tiles'], ['coverage', 'coverage'], ['off', 'off']], 'pixels');
       segmented('apexes', [[false, 'off'], [true, 'on']], 'apexes');
+      segmented('pieces', [[0, 'off'], ...LENGTHS.slice(0, -1).map((n) => [n / 2, String(n / 2)])], 'pieces');
       $('depth').addEventListener('input', (e) => { state.depth = Number(e.target.value); sync(); draw(); });
       $('probe').addEventListener('input', (e) => { state.probe = Number(e.target.value); state.hovered = null; sync(); draw(); });
 
@@ -566,6 +715,10 @@
           if (state.allDirections) items.push([(g) => stroke(g, INK(0.95), 2), 'the selected direction']);
           items.push([(g) => { g.strokeStyle = INK(0.6); g.lineWidth = 1.5; g.strokeRect(3, 1, 10, 10); }, 'pixel next to the probe']);
           items.push([disc, 'apex, sized by weight']);
+          if (!state.allDirections) items.push([(g) => stroke(g, INK(0.6), 1, [1.5, 3]), 'tile that only gates: its light is read elsewhere']);
+          items.push([(g) => { g.strokeStyle = cascadeColor(1); g.lineWidth = 1.2; g.beginPath(); g.arc(8, 6, 5, 0, 2 * Math.PI); g.stroke(); }, 'merged at the same apex, a ring per cascade']);
+          items.push([(g) => { stroke(g, cascadeColor(1), 1.4, [4, 3]); g.fillStyle = cascadeColor(1); g.beginPath(); g.moveTo(16, 6); g.lineTo(10, 2.5); g.lineTo(10, 9.5); g.fill(); }, 're-rooted: merged at another apex']);
+          if (state.pieces) items.push([(g) => { g.strokeStyle = INK(0.7); g.lineWidth = 1; g.strokeRect(1.5, 1.5, 13, 9); }, `extension piece of length ${state.pieces}`]);
         } else {
           if (state.depth) ROLES.forEach((r, i) => (i < 3 || state.scheme === 'partition') && items.push([box((a) => roleColor(i, a)), r.name]));
           if (pixelMode() === 'tiles') items.push([(g) => { g.fillStyle = INK(0.5); g.beginPath(); g.moveTo(2, 12); g.lineTo(14, 12); g.lineTo(14, 0); g.fill(); }, 'pixel shared with the next quadrant']);
@@ -581,11 +734,18 @@
           }
           if (state.apexes) items.push([disc, 'apex']);
         }
+        if (state.error && state.frame !== 'tile') {
+          items.push([(g) => { for (let i = 0; i < 16; i++) { g.fillStyle = errorColor((i / 15) * ERROR_TOP); g.fillRect(i, 0, 1, 12); } }, `reprojection error 0 .. ${ERROR_TOP}+, closed form`]);
+          items.push([(g) => { g.fillStyle = SHORT(1); g.fillRect(2, 0, 12, 12); }, 'reader at or past the near face']);
+          items.push([(g) => { g.strokeStyle = INK(0.95); g.lineWidth = 1.5; g.beginPath(); g.arc(8, 6, 5, 0, 2 * Math.PI); g.moveTo(1, 6); g.lineTo(15, 6); g.moveTo(8, 0); g.lineTo(8, 12); g.stroke(); }, 'reader']);
+        }
         $('key').replaceChildren(...items.flatMap(([paint, text]) => { const s = document.createElement('span'); s.textContent = text; return [swatch(paint), s]; }));
       }
       function sync() {
-        for (const id of ['frame', 'length', 'scheme', 'directions', 'pixels', 'apexes']) $(id).sync();
+        for (const id of ['frame', 'length', 'scheme', 'directions', 'pixels', 'apexes', 'pieces', 'error', 'placing']) $(id).sync();
         for (const field of document.querySelectorAll('[data-views]')) field.style.display = field.dataset.views.split(' ').includes(state.frame) ? '' : 'none';
+        $('placing-field').style.display = state.error && state.frame !== 'tile' ? '' : 'none';
+        [...$('pieces').children].forEach((b, i) => { b.style.display = i === 0 || 2 ** (i - 1) <= state.L / 2 ? '' : 'none'; });
         $('pixels').children[1].style.display = state.frame === 'tile' ? '' : 'none';
         $('length-label').textContent = state.frame === 'intervals' ? 'longest interval' : 'tile length';
         document.querySelector('main').classList.toggle('no-strip', state.frame === 'intervals');
@@ -604,12 +764,12 @@
         const [x, y] = toWorld((e.clientX - r.left) * dpr, (e.clientY - r.top) * dpr);
         if (state.frame === 'intervals') {
           const N = Math.log2(state.L), shown = state.allDirections ? probeIntervals(N + 1).tiles.flat() : probeTreeChain(selectedChain, N).flat().flatMap((c) => c.tiles);
-          return { x, part: shown.filter((t) => t.lit && contains(t, x, y)).at(-1) };
+          return { x, y, part: shown.filter((t) => t.lit && contains(t, x, y)).at(-1) };
         }
         const tiles = state.frame === 'fan' ? probeFan().filter((t) => t.lit) : fan(state.L);
         const roots = tiles.filter((t) => t.d === state.direction && (state.frame === 'fan' || t.ay === 0));
         const part = state.depth ? roots.flatMap((r) => tilesAtDepth(r, state.depth)).filter((t) => contains(t, x, y)).at(-1) : null;
-        return { x, part, fanTile: tiles.find((t) => contains(t, x, y)) };
+        return { x, y, part, fanTile: tiles.find((t) => contains(t, x, y)) };
       }
       views.main.addEventListener('pointermove', (e) => {
         const { part, fanTile } = tileAt(e);
@@ -618,7 +778,12 @@
       });
       views.main.addEventListener('pointerleave', () => { state.hovered = null; drawMain(); });
       views.main.addEventListener('click', (e) => {
-        const { x, fanTile } = tileAt(e);
+        const { x, y, fanTile } = tileAt(e);
+        // the reader goes to the nearest probe position, a pixel corner
+        if (state.error && state.placing && state.frame !== 'tile') {
+          state.reader = [Math.round(x), Math.round(y)];
+          sync(); draw(); return;
+        }
         if (state.frame === 'intervals') {
           state.probe = Math.max(0, Math.min(Math.floor(x), state.L)); state.hovered = null;
           sync(); draw(); return;
@@ -644,6 +809,9 @@
         state.hovered = null;
         e.preventDefault(); sync(); draw();
       });
+
+      // for checks from the console
+      window.polygonalExtensions = { state, draw, sync, probeTreeChain, selectedChain, closedError, directError, faces, tileCells, tilesAtDepth, readerPoint };
 
       const observer = new ResizeObserver(draw);
       observer.observe(views.main); observer.observe(views.steps);

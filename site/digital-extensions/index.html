@@ -3,8 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Moment HRC Rays</title>
-    <meta name="description" content="Every ray one point reads in moment HRC (odd merging), and how each is built by extension." />
+    <title>Digital extensions</title>
+    <meta name="description" content="Visualiser for digital extensions" />
+    <meta name="section" content="visualisations" />
     <style>
       *,
       *::before,
@@ -293,21 +294,25 @@
     <aside id="left">
       <section>
         <h2>setup <small id="pt"></small></h2>
-        <div class="field"><div class="label">cells (N × N)</div><div class="seg" id="seg-N"></div></div>
-        <div class="field"><div class="label">line family</div><div class="seg" id="seg-fam"></div></div>
-        <div class="field"><div class="label">frustum</div><div class="seg" id="seg-frustum"></div></div>
-        <div class="field"><button class="toggle" id="tog-cells"><span class="sw"></span><span>shade cells</span></button></div>
+        <div class="field"><div class="label">resolution (N × N pixels)</div><div class="seg" id="seg-N"></div></div>
+        <div class="field"><div class="label">split rule</div><div class="seg" id="seg-fam"></div></div>
+        <div class="field"><div class="label">quadrant</div><div class="seg" id="seg-frustum"></div></div>
+        <div class="field"><div class="label">merge</div><div class="seg" id="seg-merge"></div></div>
+        <div class="field"><button class="toggle" id="tog-cells"><span class="sw"></span><span>shade pixels</span></button></div>
       </section>
       <section>
-        <h2>levels <small id="count"></small></h2>
+        <h2>cascades <small id="count"></small></h2>
         <div id="levels"></div>
       </section>
       <section class="hint">
         <p><b>Drag</b> the ring to move the point, or <kbd>←</kbd><kbd>↑</kbd><kbd>→</kbd><kbd>↓</kbd>. <b>Hover</b> a ray to see how it
           is built, <b>scroll</b> to cycle rays that overlap there, <b>click</b> to pin it (<kbd>Esc</kbd> unpins).</p>
-        <p>Every node merges as odd: cone <code>c</code> of level <code>l</code> reads its two lines <code>c − n</code>, <code>c + 1 − n</code>
-          (<code>n = 2<sup>l</sup></code>), and its two level-<code>l+1</code> children start where those lines end. Even merging is not
-          drawn, and roots are wherever lines end, not snapped to the <code>2<sup>l</sup></code> lattice the GPU records sit on.</p>
+        <p>Cone <code>c</code> of cascade <code>l</code> (<code>n = 2<sup>l</sup></code>, root column <code>X</code>) holds its two lines
+          <code>c − n</code>, <code>c + 1 − n</code>. <b>As the shader</b> (digital-hrc.js, same apex + forward): when <code>X / n</code> is odd,
+          its two cascade-<code>l+1</code> children start where its lines end; when it is even, it reads the second halves of the three
+          cascade-<code>l+1</code> lines between its edges, then half the children at the same root (only their part beyond
+          <code>2n</code>) and half those starting where its outer two lines of cascade <code>l+1</code> end. Roots stay on the lattice the
+          GPU stores rays on. <b>All odd</b>: every cone merges as an odd one, whatever its column.</p>
         <p>Subtrees rooted outside the domain's rows are dropped, as the shader drops them.</p>
       </section>
     </aside>
@@ -327,16 +332,16 @@
         </div>
       </section>
       <section class="hint">
-        <p>The bars under the line are its extension tree: level <code>k</code> splits each piece <code>(k, j)</code> into
+        <p>The bars under the line are its extension tree: cascade <code>k</code> splits each piece <code>(k, j)</code> into
           <code>(k−1, a)</code> then <code>(k−1, j−a)</code>, the second rooted where the first ends, with <code>a = split(k, j)</code>.
           <b>Hover a bar</b> to see that piece's two halves.</p>
-        <p>The record is merged as <code>μ₀ = μ₀′ + T′μ₀″</code>, <code>μ₁ = ½(μ₁′ + T′(μ₀″ + μ₁″))</code>,
+        <p>A ray is built from its halves as <code>μ₀ = μ₀′ + T′μ₀″</code>, <code>μ₁ = ½(μ₁′ + T′(μ₀″ + μ₁″))</code>,
           <code>μ₂ = ¼(μ₂′ + T′(μ₀″ + 2μ₁″ + μ₂″))</code>, <code>T = T′T″</code> (′ first half, ″ second).</p>
       </section>
     </aside>
 
     <script type="module">
-      import { splitRule, lineRowsOf } from '../moment-hrc/moment-hrc.js';
+      import { splitRuleOf, rayPathRowsOf } from '../digital-hrc/digital-hrc.js';
 
       const $ = (id) => document.getElementById(id);
       const el = (tag, props = {}, ...kids) => {
@@ -349,8 +354,8 @@
       const levelColor = (m) => LEVEL_COLORS[m % LEVEL_COLORS.length];
       const FRUSTUMS = ['+x', '+y', '−x', '−y', 'all'];
 
-      const state = { N: 64, fam: 'lbal', frustum: 0, point: [16, 32], cells: true, hidden: new Set() };
-      let LT = 1, split = splitRule('lbal');
+      const state = { N: 64, fam: 'balanced', merge: 'shader', frustum: 0, point: [16, 32], cells: true, hidden: new Set() };
+      let LT = 1, split = splitRuleOf('balanced');
       let rays = [];             // { key, f, m, X, y, j, rows, cells, pts, uses }
       let hover = null, pinned = null, candidates = [], cycle = 0;
       let focus = null, segs = [];   // the extension view's pieces of the active ray, and the hovered one
@@ -369,22 +374,24 @@
       }
 
       // ════════════════════════════════════════════════════════════════════
-      // The rays the point reads: per frustum, its two level-0 cones, each reading its two lines and recursing into the
-      // two children rooted where those lines end. A line shared by two cones is one ray with two uses.
+      // The rays the point reads: per frustum, its two level-0 cones, level by level. A cone read in full holds its two
+      // lines; the merge says which level-(l+1) cones it reads and with what weight. A line read twice is one ray with
+      // two uses.
       // ════════════════════════════════════════════════════════════════════
       function build() {
         const { N } = state;
         LT = Math.max(1, Math.ceil(Math.log2(N)));
-        split = splitRule(state.fam);
+        split = splitRuleOf(state.fam);
         const memo = new Map();
         const rowsOf = (m, j) => {
           const k = `${m}:${j}`;
-          if (!memo.has(k)) memo.set(k, lineRowsOf(split, m, j));
+          if (!memo.has(k)) memo.set(k, rayPathRowsOf(split, m, j));
           return memo.get(k);
         };
         const byKey = new Map();
         rays = [];
         const add = (f, m, X, y, j, use) => {
+          if (X >= N - 1 || y < 0 || y >= N) return;   // outside the domain: empty, as loadRay in the shader
           const key = `${f}:${m}:${X}:${y}:${j}`;
           let ray = byKey.get(key);
           if (!ray) {
@@ -399,17 +406,40 @@
         };
         for (const f of state.frustum === 4 ? [0, 1, 2, 3] : [state.frustum]) {
           const [px, py] = toFrame(f, ...state.point);
-          const visit = (l, X, y, c) => {
-            if (X >= N - 1 || y < 0 || y >= N) return;
-            const n = 1 << l, j0 = c - n;
-            add(f, l, X, y, j0, { l, c, X, y, edge: 'lower' });
-            add(f, l, X, y, j0 + 1, { l, c, X, y, edge: 'upper' });
-            if (l >= LT || X + n >= N - 1) return;
-            visit(l + 1, X + n, y + j0, 2 * c);
-            visit(l + 1, X + n, y + j0 + 1, 2 * c + 1);
-          };
-          visit(0, px, py, 0);
-          visit(0, px, py, 1);
+          // cones of one level: (X, y, c, own) -> weight; own: its two lines are read (else only its part beyond)
+          let cones = new Map([[`${px},${py},0,1`, { X: px, y: py, c: 0, own: true, w: 1 }], [`${px},${py},1,1`, { X: px, y: py, c: 1, own: true, w: 1 }]]);
+          for (let l = 0; l <= LT; l++) {
+            const n = 1 << l, next = new Map();
+            const push = (X, y, c, own, w) => {
+              if (X >= N - 1 || y < 0 || y >= N) return;   // subtrees rooted outside the domain's rows are dropped
+              const k = `${X},${y},${c},${own ? 1 : 0}`, e = next.get(k);
+              if (e) e.w += w; else next.set(k, { X, y, c, own, w });
+            };
+            for (const { X, y, c, own, w } of cones.values()) {
+              const j0 = c - n;
+              if (own) {
+                add(f, l, X, y, j0, { l, c, X, y, w, edge: 'lower line' });
+                add(f, l, X, y, j0 + 1, { l, c, X, y, w, edge: 'upper line' });
+              }
+              if (l >= LT || X + n >= N - 1) continue;
+              if (state.merge === 'odd' || ((X >> l) & 1)) {
+                push(X + n, y + j0, 2 * c, true, w);
+                push(X + n, y + j0 + 1, 2 * c + 1, true, w);
+                continue;
+              }
+              for (const J of [2 * j0, 2 * j0 + 1, 2 * j0 + 2]) {
+                const a = split(l + 1, J);
+                add(f, l, X + n, y + a, J - a, { l, c, X, y, w, edge: `second half of cascade-${l + 1} line ${J}` });
+              }
+              push(X, y, 2 * c, false, w / 2);
+              push(X, y, 2 * c + 1, false, w / 2);
+              if (X + 2 * n < N - 1) {
+                push(X + 2 * n, y + 2 * j0, 2 * c, true, w / 2);
+                push(X + 2 * n, y + 2 * j0 + 2, 2 * c + 1, true, w / 2);
+              }
+            }
+            cones = next;
+          }
         }
         const find = (r) => (r && byKey.get(r.key)) || null;
         hover = find(hover);
@@ -440,8 +470,9 @@
         state.point = state.point.map((v) => Math.min(n - 1, Math.floor((v * n) / state.N)));
         state.N = n;
       });
-      segmented('seg-fam', [['lbal', 'lbal'], ['lsym', 'lsym']], () => state.fam, (v) => (state.fam = v));
+      segmented('seg-fam', [['balanced', 'balanced'], ['alternating', 'alternating']], () => state.fam, (v) => (state.fam = v));
       segmented('seg-frustum', FRUSTUMS.map((t, i) => [i, t]), () => state.frustum, (v) => (state.frustum = v));
+      segmented('seg-merge', [['shader', 'as the shader'], ['odd', 'all odd']], () => state.merge, (v) => (state.merge = v));
       $('tog-cells').addEventListener('click', () => {
         state.cells = !state.cells;
         update();
@@ -458,7 +489,7 @@
         $('levels').replaceChildren(
           ...counts.map((n, m) => {
             const b = el('button', { className: state.hidden.has(m) ? 'off' : '', title: `${n} rays of ${1 << m} columns` },
-              el('span', { className: 'sw', style: `background:${levelColor(m)}` }), `level ${m}`, el('span', { className: 'n', textContent: n }));
+              el('span', { className: 'sw', style: `background:${levelColor(m)}` }), `cascade ${m}`, el('span', { className: 'n', textContent: n }));
             b.addEventListener('click', () => {
               state.hidden.has(m) ? state.hidden.delete(m) : state.hidden.add(m);
               update(false);
@@ -466,7 +497,7 @@
             return b;
           }),
         );
-        $('count').textContent = `${rays.length} rays · ${cells} cells`;
+        $('count').textContent = `${rays.length} rays · ${cells} pixels`;
       }
 
       // ════════════════════════════════════════════════════════════════════
@@ -683,8 +714,9 @@
           return;
         }
         const { m, X, y, j, f } = ray, L = 1 << m;
-        $('ray-id').textContent = `${FRUSTUMS[f]} frame`;
-        const uses = ray.uses.map((u) => `${u.edge} line of cone ${u.c} of level ${u.l}`);
+        $('ray-id').textContent = `${FRUSTUMS[f]} quadrant`;
+        const weight = (w) => (w === 1 ? '' : `, weight ${w}`);
+        const uses = ray.uses.map((u) => `${u.edge} of cone ${u.c} of cascade ${u.l} at (${u.X}, ${u.y})${weight(u.w)}`);
         $('ray-info').replaceChildren(
           el('div', { className: 'big', innerHTML: `ray (${m}, ${X}, ${y}, ${j})${pinned ? '<span class="pin">pinned</span>' : ''}` }),
           el('div', { textContent: `${L} column${L > 1 ? 's' : ''} after column ${X}, from row ${y}, slope ${j}/${L}` +
@@ -788,7 +820,7 @@
           const x = ray.X + F.t0 + 1, y = ray.y + F.r0 + F.j;
           $('seg-info').replaceChildren(
             el('div', { className: 'eq', textContent: `(0, ${F.j}) from ${at}` }),
-            el('div', { textContent: `a level-0 record: the one cell (${x}, ${y}) of the ${FRUSTUMS[ray.f]} frame. T = a^sec, the cell's emission ` +
+            el('div', { textContent: `a cascade-0 ray: the one pixel (${x}, ${y}) of the ${FRUSTUMS[ray.f]} quadrant. T = a^sec, the pixel's emission ` +
               `attenuated inside it, μ₀ = μ₁ = μ₂.` }),
           );
           return;
@@ -798,10 +830,10 @@
         if (kind === 'even') why = `j is even, so a = j/2 exactly.`;
         else {
           const lvl = F.k % 2 ? 'odd' : 'even', aj = Math.abs(F.j);
-          const rule = state.fam === 'lsym'
-            ? `lsym rounds away at even levels and toward at odd ones; level ${F.k} is ${lvl}`
-            : F.k % 2 ? `lbal at an odd level: away when bit 1 of |j| is clear; |j| = ${aj}, bit 1 = ${(aj >> 1) & 1}`
-                      : `lbal at an even level: away when bit 2 of |j| is set; |j| = ${aj}, bit 2 = ${(aj >> 2) & 1}`;
+          const rule = state.fam === 'alternating'
+            ? `alternating rounds away at even cascades and toward at odd ones; cascade ${F.k} is ${lvl}`
+            : F.k % 2 ? `balanced, at an odd cascade: away when bit 1 of |j| is clear; |j| = ${aj}, bit 1 = ${(aj >> 1) & 1}`
+                      : `balanced, at an even cascade: away when bit 2 of |j| is set; |j| = ${aj}, bit 2 = ${(aj >> 2) & 1}`;
           why = `j is odd, so |j|/2 = ${aj / 2} is rounded <span class="${kind}">${kind === 'away' ? 'away from' : 'toward'} zero</span> (${rule}).`;
         }
         $('seg-info').replaceChildren(

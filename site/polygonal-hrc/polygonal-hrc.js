@@ -13,6 +13,12 @@
 //   1 / value. It merges cascade n + 1 by a same-apex merge or a re-rooted merge (1/2 backward + 1/2 forward), chosen by the
 //   apex column; children are gated by their transmittance (unblocked share of their directions).
 // gather: probes at pixel corners; the four quadrants accumulate into the (N + 1)^2 corner fluence.
+//
+// runs = false (no corner runs): a tile holds two numbers instead of silhouettes, its transmittance (unblocked share of its
+//   directions) and its light (mean radiance over its directions, where the first hit is light). Extension: first half, then
+//   the two second halves weighted by the share of the tile's lines crossing each one's start segment (2/3 and 1/3);
+//   transmittances multiply, light counts behind the transmittance in front. The merge reads tiles the same way, with each
+//   tile's light spread evenly over its directions and placed at the tile's centre.
 
 const WORKGROUP = 64;
 const PARAM_STRIDE = 256;
@@ -22,7 +28,7 @@ const TILE_WORDS = 3 * SILHOUETTE_WORDS;
 const range = (n) => [...Array(n).keys()];
 const unrolled = (n, f, separator = '\n') => range(n).map(f).join(separator);   // generated, unrolled code
 
-function shaderSource({ N, lastCascade, cull }) {
+function shaderSource({ N, lastCascade, cull, runs }) {
   return /* wgsl */ `
 const N: i32 = ${N};
 const LAST_CASCADE: i32 = ${lastCascade};       // tiles go up to length N = 2^LAST_CASCADE
@@ -33,6 +39,7 @@ const LIGHT_CULL: bool = ${cull};
 const EMPTY_SLOT: u32 = 0xffffffffu;
 const SAMPLE_SPACING: f32 = ${(1 / (2 - 1 / Math.SQRT2) / Math.SQRT2).toPrecision(17)};   // samples at +- SAMPLE_SPACING s columns from the apex
 const QUARTER_PI: f32 = 0.78539816339744831;
+const SECOND_PIXEL_SHARE: f32 = ${(1 - Math.atan(0.5) / (Math.PI / 4)).toPrecision(17)};   // length-1 tile: share of its angle that meets pixel y + 1 first
 
 struct PassParams { cascade: i32, quadrant: i32, lightCount: i32, unused: i32 }
 
@@ -346,6 +353,103 @@ fn coneValue(cascade: i32, isTopCascade: bool, apex: vec2i, direction: i32, forw
   return out;
 }
 
+// ------------------------------------------------------------------------------------------------ without corner runs
+// a tile is (transmittance, light) in its first two words
+fn storedTileValue(slot: i32) -> vec2f {
+  if (slot < 0) { return vec2f(1.0, 0.0); }
+  let base = u32(slot) * ${TILE_WORDS}u;
+  return vec2f(bitcast<f32>(coneTiles[base]), bitcast<f32>(coneTiles[base + 1u]));
+}
+fn storeTileValue(slot: u32, value: vec2f) {
+  let base = slot * ${TILE_WORDS}u;
+  coneTiles[base] = bitcast<u32>(value.x); coneTiles[base + 1u] = bitcast<u32>(value.y);
+}
+
+// length 1: pixel y meets every line first, pixel y + 1 the share SECOND_PIXEL_SHARE (slopes [1/2, 1])
+@compute @workgroup_size(${WORKGROUP})
+fn extendLength1Values(@builtin(global_invocation_id) id: vec3u, @builtin(num_workgroups) groups: vec3u) {
+  let rows = N + 2;
+  let index = threadIndex(id, groups);
+  if (index >= 2 * N * rows) { return; }
+  let y = index % rows - 2; let X = (index / rows) % N; let mirrored = index / (rows * N);
+  var value = vec2f(1.0, 0.0);
+  if (isOpaque(mirrored, X, y)) { value = vec2f(0.0, emissionAt(mirrored, X, y)); }
+  else if (isOpaque(mirrored, X, y + 1)) { value = vec2f(1.0 - SECOND_PIXEL_SHARE, SECOND_PIXEL_SHARE * emissionAt(mirrored, X, y + 1)); }
+  storeTileValue(u32(index), value);
+}
+
+// length >= 2: the first half, then the second halves; at column X + L / 2 the tile's lines cross rows y + d / 2 + [0, 3/2],
+// so the lower second half (rows y + floor(d / 2) + [0, 1]) takes 2/3 of them for even d, 1/3 for odd d
+@compute @workgroup_size(${WORKGROUP})
+fn extendConeTilesValues(@builtin(global_invocation_id) id: vec3u, @builtin(num_workgroups) groups: vec3u) {
+  let cascade = params.cascade; let L = 1 << u32(cascade); let rows = N + L + 1;
+  let index = threadIndex(id, groups);
+  if (index >= 2 * N * rows) { return; }
+  let rowIndex = index % rows; let rest = index / rows; let direction = rest % L; let rest2 = rest / L;
+  let columnIndex = rest2 % (N >> u32(cascade)); let mirrored = rest2 / (N >> u32(cascade));
+  let X = columnIndex * L; let y = rowIndex - L - 1;
+  let halfLength = L >> 1u; let halfDirection = direction >> 1u;
+  let first = storedTileValue(coneTileIndex(mirrored, cascade - 1, X, y, halfDirection));
+  let secondLower = storedTileValue(coneTileIndex(mirrored, cascade - 1, X + halfLength, y + halfDirection, halfDirection));
+  let secondUpper = storedTileValue(coneTileIndex(mirrored, cascade - 1, X + halfLength, y + halfDirection + 1, halfDirection));
+  let lowerShare = select(2.0 / 3.0, 1.0 / 3.0, (direction & 1) == 1);
+  let second = lowerShare * secondLower + (1.0 - lowerShare) * secondUpper;
+  storeTileValue(u32(cascadeOffset(cascade) + index), vec2f(first.x * second.x, first.y + first.x * second.y));
+}
+
+// tile (X, y, direction) of the quadrant (negative directions read the mirror image), and its centre: 3L / 2 along its axis
+fn tileValue(cascade: i32, X: i32, y: i32, direction: i32) -> vec2f {
+  let mirrored = direction < 0;
+  return storedTileValue(coneTileIndex(select(0, 1, mirrored), cascade, X, select(y, N - 1 - y, mirrored), select(direction, -direction - 1, mirrored)));
+}
+fn tileCentre(cascade: i32, X: i32, y: i32, direction: i32) -> vec2f {
+  let L = f32(1 << u32(cascade));
+  return vec2f(f32(X) + 0.5 * L, f32(y - direction) + 1.5 * (f32(direction) + 0.5));
+}
+// a tile's light over [lowerAngle, upperAngle] from the apex, behind transmittance inFront, rescaled to the two samples by
+// distance to the tile's centre
+fn tileLight(cascade: i32, X: i32, y: i32, direction: i32, lowerAngle: f32, upperAngle: f32, inFront: f32, apex: vec2i, forwardSample: vec2f, backwardSample: vec2f) -> vec2f {
+  let value = tileValue(cascade, X, y, direction);
+  if (value.y <= 0.0 || inFront <= 0.0) { return vec2f(0.0); }
+  let centre = tileCentre(cascade, X, y, direction); let distanceFromApex = length(centre - vec2f(apex));
+  return value.y * (upperAngle - lowerAngle) * inFront * vec2f(distanceFromApex / length(centre - forwardSample), distanceFromApex / length(centre - backwardSample));
+}
+
+// coneValue without corner runs: the same merges, every gate a product of tile transmittances
+fn coneValueValues(cascade: i32, isTopCascade: bool, apex: vec2i, direction: i32, forwardSample: vec2f, backwardSample: vec2f) -> vec2f {
+  let s = 1 << u32(cascade); let axis = vec2i(2 * s, 2 * direction + 1);
+  var out = vec2f(0.0);
+  let own = tileValue(cascade, apex.x + s, apex.y + direction, direction).x;
+  if (((apex.x >> u32(cascade)) & 1) == 0) {
+    // same-apex merge
+    for (var whichHalf = 0; whichHalf < 2; whichHalf += 1) {
+      let childDirection = 2 * direction + whichHalf;
+      let lowerAngle = angleFromAxis(vec2i(2 * s, childDirection), axis); let upperAngle = angleFromAxis(vec2i(2 * s, childDirection + 1), axis);
+      if (own > 0.0 && !isTopCascade) { out += own * readChild(cascade + 1, apex, childDirection, forwardSample, backwardSample); }
+      out += tileLight(cascade + 1, apex.x + 2 * s, apex.y + childDirection, childDirection, lowerAngle, upperAngle, own, apex, forwardSample, backwardSample);
+    }
+  } else {
+    // re-rooted merge: the next interval [2s, 3s) is covered by two half-length tiles; each forward half crosses only one
+    let nextLower = tileValue(cascade, apex.x + 2 * s, apex.y + 2 * direction, direction).x;
+    let nextUpper = tileValue(cascade, apex.x + 2 * s, apex.y + 2 * direction + 1, direction).x;
+    for (var whichHalf = 0; whichHalf < 2; whichHalf += 1) {
+      let childDirection = 2 * direction + whichHalf;
+      if (!isTopCascade) { out += 0.5 * readChild(cascade + 1, vec2i(apex.x - s, apex.y - direction - whichHalf), childDirection, forwardSample, backwardSample); }
+      let childTransmittance = own * select(nextLower, nextUpper, whichHalf == 1);
+      if (childTransmittance <= 0.0) { continue; }
+      let forwardApex = vec2i(apex.x + s, apex.y + direction + whichHalf); let forwardAxis = vec2i(4 * s, 2 * childDirection + 1);
+      if (!isTopCascade) { out += 0.5 * childTransmittance * readChild(cascade + 1, forwardApex, childDirection, forwardSample, backwardSample); }
+      out += 0.5 * tileLight(cascade + 1, apex.x + 3 * s, apex.y + 3 * direction + 2 * whichHalf, childDirection, angleFromAxis(vec2i(2 * s, childDirection), forwardAxis),
+                             angleFromAxis(vec2i(2 * s, childDirection + 1), forwardAxis), childTransmittance, forwardApex, forwardSample, backwardSample);
+    }
+    let lowerAngle = angleFromAxis(vec2i(s, direction), axis); let middleAngle = angleFromAxis(vec2i(2 * s, 2 * direction + 1), axis);
+    let upperAngle = angleFromAxis(vec2i(s, direction + 1), axis);
+    out += tileLight(cascade, apex.x + 2 * s, apex.y + 2 * direction, direction, lowerAngle, middleAngle, own, apex, forwardSample, backwardSample)
+         + tileLight(cascade, apex.x + 2 * s, apex.y + 2 * direction + 1, direction, middleAngle, upperAngle, own, apex, forwardSample, backwardSample);
+  }
+  return out;
+}
+
 // no pixel centre of the domain in the cone beyond 2s - 2 columns, padded by 2.5 rows (conservative)
 fn seesNoPixel(s: i32, apex: vec2i, direction: i32) -> bool {
   var nearest = max(f32(2 * s) - 2.0, 0.5 - f32(apex.x)); var farthest = f32(N) - 0.5 - f32(apex.x);
@@ -378,7 +482,7 @@ fn mergeCascade(@builtin(global_invocation_id) id: vec3u, @builtin(num_workgroup
   var out = vec2f(0.0);
   if (apex.x + 2 * s < N && !seesNoPixel(s, apex, direction) && !(LIGHT_CULL && lightCull(s, apex, direction))) {
     let axisSlope = (f32(direction) + 0.5) / f32(s); let spacing = SAMPLE_SPACING * f32(s);
-    out = coneValue(cascade, 2 * s >= N, apex, direction, vec2f(f32(apex.x) + spacing, f32(apex.y) + axisSlope * spacing),
+    out = ${runs ? 'coneValue' : 'coneValueValues'}(cascade, 2 * s >= N, apex, direction, vec2f(f32(apex.x) + spacing, f32(apex.y) + axisSlope * spacing),
                     vec2f(f32(apex.x) - spacing, f32(apex.y) - axisSlope * spacing));
   }
   coneValues[index] = out;
@@ -394,9 +498,11 @@ fn gatherProbes(@builtin(global_invocation_id) id: vec3u, @builtin(num_workgroup
   for (var direction = -1; direction <= 0; direction += 1) {
     if (isOpaque(0, probe.x, probe.y + direction)) { fluenceAtProbe += emissionAt(0, probe.x, probe.y + direction) * QUARTER_PI; continue; }   // the pixel next to the probe
     let axis = vec2i(2, 2 * direction + 1);
-    fluenceAtProbe += lightBehind0(silhouettesFromApex(0, probe.x + 1, probe.y + direction, direction, probe, axis, true),
+${runs ? `    fluenceAtProbe += lightBehind0(silhouettesFromApex(0, probe.x + 1, probe.y + direction, direction, probe, axis, true),
                                    angleFromAxis(vec2i(1, direction), axis), angleFromAxis(vec2i(1, direction + 1), axis), probe, probePoint, probePoint).x;
-    fluenceAtProbe += coneValue(0, false, probe, direction, probePoint, probePoint).x;
+    fluenceAtProbe += coneValue(0, false, probe, direction, probePoint, probePoint).x;` : `    fluenceAtProbe += tileLight(0, probe.x + 1, probe.y + direction, direction, angleFromAxis(vec2i(1, direction), axis),
+                                angleFromAxis(vec2i(1, direction + 1), axis), 1.0, probe, probePoint, probePoint).x;
+    fluenceAtProbe += coneValueValues(0, false, probe, direction, probePoint, probePoint).x;`}
   }
   let o = sceneCornerIndex(probe.x, probe.y);
   if (params.quadrant == 0) { fluence[o] = fluenceAtProbe; } else { fluence[o] += fluenceAtProbe; }
@@ -406,10 +512,11 @@ fn gatherProbes(@builtin(global_invocation_id) id: vec3u, @builtin(num_workgroup
 
 export class PolygonalHRC {
   // cull: also skip cones with no light pixel nearby (scans the light list per cone; changes nothing)
-  constructor(device, N, { cull = false } = {}) {
+  // runs: tiles hold corner runs (occluder silhouettes); false: transmittance and light only
+  constructor(device, N, { cull = false, runs = true } = {}) {
     const lastCascade = Math.round(Math.log2(N));
     if (1 << lastCascade !== N || lastCascade < 2 || lastCascade > 10) throw new Error('N must be a power of two, 4 .. 1024 (packed column offsets: 10 bits)');
-    Object.assign(this, { device, N, lastCascade, cull });
+    Object.assign(this, { device, N, lastCascade, cull, runs });
     const storage = GPUBufferUsage.STORAGE, copyDst = GPUBufferUsage.COPY_DST, copySrc = GPUBufferUsage.COPY_SRC;
     const buffer = (size, usage = storage) => device.createBuffer({ size: Math.max(size, 16), usage });
 
@@ -434,7 +541,7 @@ export class PolygonalHRC {
     this.paramBuffer = buffer(this.paramData.byteLength, GPUBufferUsage.UNIFORM | copyDst);
     this.writeParams();
 
-    this.module = device.createShaderModule({ code: shaderSource({ N, lastCascade, cull }) });
+    this.module = device.createShaderModule({ code: shaderSource({ N, lastCascade, cull, runs }) });
     const readOnly = { type: 'read-only-storage' }, readWrite = { type: 'storage' };
     const kinds = [readOnly, readOnly, readWrite, readOnly, readWrite, readWrite, { type: 'uniform', hasDynamicOffset: true }, readOnly, readWrite];
     const layout = device.createBindGroupLayout({ entries: kinds.map((b, binding) => ({ binding, visibility: GPUShaderStage.COMPUTE, buffer: b })) });
@@ -444,7 +551,8 @@ export class PolygonalHRC {
       .map((b, binding) => ({ binding, resource: binding === 6 ? { buffer: b, size: 16 } : { buffer: b } })) }));
     const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
     const pipeline = (entryPoint) => device.createComputePipeline({ layout: pipelineLayout, compute: { module: this.module, entryPoint } });
-    this.pipelines = { extendLength1: pipeline('extendLength1'), extendConeTiles: pipeline('extendConeTiles'), mergeCascade: pipeline('mergeCascade'),
+    this.pipelines = { extendLength1: pipeline(runs ? 'extendLength1' : 'extendLength1Values'), extendConeTiles: pipeline(runs ? 'extendConeTiles' : 'extendConeTilesValues'),
+                       mergeCascade: pipeline('mergeCascade'),
                        gatherProbes: pipeline('gatherProbes') };
   }
 

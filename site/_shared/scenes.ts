@@ -117,6 +117,10 @@ scene('tests', 'Blob light', (() => {
 scene('tests', 'RC: pixel', [light(36, 32, 1, 5), px(0, 50, 60, 61)], 128);
 // RC's offline scene: an 8×8 light at (36, 32) and the same wall
 scene('tests', 'RC: 8×8', [light(36, 32, 8), px(0, 50, 60, 61)], 128);
+// a one-pixel light a few pixels above a one-pixel solid: the smallest shadow, from close by
+scene('tests', 'Pixel shadow', [light(60, 56, 1), px(60, 61, 62, 63)], 128);
+// a one-pixel light in the middle of a one-pixel bar: a light whose neighbours on two sides are solid
+scene('tests', 'Light in bar', [px(36, 60, 58, 59), light(60, 58, 1), px(61, 85, 58, 59)], 128);
 // a light behind a one-pixel wall with a one-pixel hole: a narrow beam
 scene('tests', 'Pixel hole', [light(20, 63, 2), px(48, 49, 0, 64), px(48, 49, 65, 128)], 128);
 // a light beside a diagonal wall of single pixels that touch only at their corners: leaks between the corners

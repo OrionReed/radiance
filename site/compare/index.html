@@ -1,0 +1,739 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>A/B compare</title>
+    <meta name="description" content="Two schemes side by side on the same scene" />
+    <meta name="section" content="visualisations" />
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      :root {
+        --bg: #0e0e0e;
+        --panel: #151515;
+        --line: rgba(255, 255, 255, 0.08);
+        --text: rgba(255, 255, 255, 0.82);
+        --dim: rgba(255, 255, 255, 0.45);
+        --faint: rgba(255, 255, 255, 0.28);
+        --ctl: rgba(255, 255, 255, 0.06);
+        --ctl-hover: rgba(255, 255, 255, 0.11);
+        --on: #d8d8d8;
+        --on-text: #111;
+        --accent: #7fc8a9;
+        --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+      }
+      body {
+        display: grid;
+        grid-template-columns: 236px minmax(0, 1fr) 252px;
+        background: var(--bg);
+        color: var(--text);
+        font: 12px/1.35 system-ui, -apple-system, 'Segoe UI', sans-serif;
+      }
+      aside {
+        background: var(--panel);
+        overflow-y: auto;
+        scrollbar-width: thin;
+        user-select: none;
+      }
+      #left {
+        border-right: 1px solid var(--line);
+      }
+      #right {
+        border-left: 1px solid var(--line);
+      }
+      section {
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--line);
+      }
+      h2 {
+        margin: 0 0 8px;
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+        display: flex;
+        justify-content: space-between;
+      }
+      h2 small {
+        font-family: var(--mono);
+        font-weight: 400;
+        text-transform: none;
+        letter-spacing: 0;
+        color: var(--faint);
+      }
+      .field {
+        margin-top: 10px;
+      }
+      .field:first-child {
+        margin-top: 0;
+      }
+      .label {
+        font-size: 11px;
+        color: var(--dim);
+        margin-bottom: 4px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .label .val {
+        font-family: var(--mono);
+        color: var(--text);
+      }
+      .seg {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: 1fr;
+        gap: 2px;
+        background: var(--ctl);
+        border-radius: 6px;
+        padding: 2px;
+      }
+      .seg.wrap {
+        grid-auto-flow: row;
+        grid-template-columns: repeat(var(--cols), 1fr);
+      }
+      .seg button,
+      .toggle {
+        font: inherit;
+        color: var(--dim);
+        background: none;
+        border: 0;
+        cursor: pointer;
+      }
+      .seg button {
+        font-size: 11px;
+        border-radius: 4px;
+        padding: 4px 2px;
+      }
+      .seg button:hover {
+        color: var(--text);
+        background: var(--ctl-hover);
+      }
+      .seg button.on {
+        background: var(--on);
+        color: var(--on-text);
+      }
+      .disabled {
+        opacity: 0.4;
+        pointer-events: none;
+      }
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0;
+        width: 100%;
+        text-align: left;
+      }
+      .toggle .sw {
+        width: 20px;
+        height: 11px;
+        border-radius: 6px;
+        background: var(--ctl-hover);
+        position: relative;
+        flex: none;
+      }
+      .toggle .sw::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--dim);
+      }
+      .toggle.on .sw {
+        background: var(--accent);
+      }
+      .toggle.on .sw::after {
+        left: 11px;
+        background: #fff;
+      }
+      .toggle .name {
+        color: var(--text);
+      }
+      input[type='range'] {
+        width: 100%;
+        margin: 0;
+        accent-color: var(--on);
+      }
+      #scene-list {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1px 2px;
+      }
+      #scene-list .group {
+        grid-column: 1 / -1;
+        font-size: 10px;
+        color: var(--faint);
+        margin: 7px 0 1px;
+      }
+      #scene-list .group:first-child {
+        margin-top: 0;
+      }
+      #scene-list button {
+        font: inherit;
+        text-align: left;
+        color: var(--dim);
+        background: none;
+        border: 0;
+        border-radius: 4px;
+        padding: 3px 4px;
+        cursor: pointer;
+        display: flex;
+        gap: 4px;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      #scene-list button .idx {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--faint);
+        width: 13px;
+        flex: none;
+        text-align: right;
+        line-height: 16px;
+      }
+      #scene-list button:hover {
+        background: var(--ctl);
+        color: var(--text);
+      }
+      #scene-list button.on {
+        background: var(--on);
+        color: var(--on-text);
+      }
+      #scene-list button.on .idx {
+        color: rgba(0, 0, 0, 0.5);
+      }
+      #canvas-area {
+        position: relative;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+      }
+      .panel {
+        position: relative;
+      }
+      .panel canvas {
+        display: block;
+        image-rendering: pixelated;
+      }
+      .panel .name {
+        position: absolute;
+        bottom: 100%;
+        left: 0;
+        padding-bottom: 6px;
+        font-size: 11px;
+        color: var(--dim);
+        white-space: nowrap;
+      }
+      .panel .note {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        color: var(--dim);
+        background: var(--bg);
+        text-align: center;
+        padding: 16px;
+      }
+      .hint {
+        font-size: 10.5px;
+        color: var(--faint);
+        margin-top: 8px;
+      }
+      #legend .bar {
+        height: 10px;
+        border-radius: 2px;
+        margin-top: 10px;
+      }
+      #legend .ticks {
+        position: relative;
+        height: 12px;
+        font-family: var(--mono);
+        font-size: 9px;
+        color: var(--faint);
+        margin-top: 2px;
+      }
+      #legend .ticks span {
+        position: absolute;
+      }
+      #legend .caption {
+        font-size: 10.5px;
+        color: var(--faint);
+        margin-top: 4px;
+      }
+      #error {
+        position: absolute;
+        inset: 0;
+        display: none;
+        place-items: center;
+        color: var(--dim);
+        padding: 24px;
+        text-align: center;
+      }
+      #error.open {
+        display: grid;
+      }
+    </style>
+  </head>
+  <body>
+    <aside id="left">
+      <section>
+        <h2>scene <small id="scene-id"></small></h2>
+        <div id="scene-list"></div>
+      </section>
+      <section>
+        <div id="scene-params"></div>
+      </section>
+    </aside>
+
+    <main id="canvas-area"><div id="error"></div></main>
+
+    <aside id="right">
+      <section>
+        <h2>A</h2>
+        <div id="side-a"></div>
+      </section>
+      <section>
+        <h2>B</h2>
+        <div id="side-b"></div>
+      </section>
+      <section>
+        <h2>output</h2>
+        <div id="output"></div>
+        <div id="legend"></div>
+        <div class="hint" id="status"></div>
+      </section>
+    </aside>
+
+    <script type="module">
+      // A/B compare: two schemes on the same scene, side by side, and optionally the difference between them. The scene is
+      // rasterised once (radiance S and transmittance T per pixel) and handed to each scheme in its own encoding; every panel
+      // shows the mean radiance per pixel, L = fluence / 2π, with the probes at corners averaged to their pixel.
+      import { DigitalHRC } from '../digital-hrc/digital-hrc.js';
+      import { PolygonalHRC } from '../polygonal-hrc/polygonal-hrc.js';
+      import { PixelExtensionHRC } from '../pixel-extension-hrc/pixel-extension-hrc.js';
+      import { Reference } from '../_shared/reference';
+      import { scenes, pixelTransmittance, SPAN } from '../_shared/scenes';
+
+      const $ = (id) => document.getElementById(id);
+      const el = (tag, props = {}, ...children) => {
+        const e = Object.assign(document.createElement(tag), props);
+        e.append(...children);
+        return e;
+      };
+
+      // ── schemes ──
+      // kind: how the output is read. centres: fluence per pixel; corners: fluence at pixel corners, (N + 1)², averaged to the
+      // pixel (inner: only the interior corners are filled, the border ones repeat them); radiance: L per pixel
+      const SCHEMES = {
+        digital: { name: 'Digital HRC', kind: 'centres', volumes: true, options: [['solidLights', 'face emission', true]] },
+        polygonal: { name: 'Polygonal HRC', kind: 'inner', volumes: false, options: [['runs', 'corner runs', true]] },
+        pixel: { name: 'Pixel-extension HRC', kind: 'corners', volumes: true, options: [['nearPixel', 'near pixel', true], ['poleClamp', 'pole clamp', true]] },
+        exact: { name: 'exact', kind: 'radiance', volumes: true, options: [] },
+        pathTrace: { name: 'path trace', kind: 'radiance', volumes: true, options: [] },
+      };
+      const KINDS = { centres: 0, inner: 1, corners: 2, radiance: 3 };
+      const defaults = (scheme) => Object.fromEntries(SCHEMES[scheme].options.map(([key, , def]) => [key, def]));
+      const cfg = { N: 256, a: { scheme: 'digital', ...defaults('digital') }, b: { scheme: 'polygonal', ...defaults('polygonal') } };
+      const out = { map: 'srgb', exposure: 1, difference: false };
+      let dirty = true, redraw = true;
+
+      // ── controls (as on the scheme pages) ──
+      const controls = [];
+      function refresh() {
+        for (const c of controls) {
+          c.sync();
+          if (c.spec.enabled) c.wrap.classList.toggle('disabled', !c.spec.enabled());
+        }
+        renderLegend();
+      }
+      const changed = () => (refresh(), syncURL());
+      function segmented(parent, spec) {
+        const seg = el('div', { className: 'seg' + (spec.cols ? ' wrap' : '') });
+        if (spec.cols) seg.style.setProperty('--cols', spec.cols);
+        const buttons = spec.options.map(([value, text]) => {
+          const b = el('button', { textContent: text });
+          b.addEventListener('click', () => (spec.set(value), changed()));
+          seg.append(b);
+          return [value, b];
+        });
+        const wrap = el('div', { className: 'field', title: spec.title ?? '' }, ...(spec.label ? [el('div', { className: 'label' }, el('span', { textContent: spec.label }))] : []), seg);
+        parent.append(wrap);
+        controls.push({ spec, sync: () => buttons.forEach(([v, b]) => b.classList.toggle('on', v === spec.get())), wrap });
+      }
+      function toggle(parent, spec) {
+        const b = el('button', { className: 'toggle' }, el('span', { className: 'sw' }), el('span', { className: 'name', textContent: spec.label }));
+        b.addEventListener('click', () => (spec.set(!spec.get()), changed()));
+        const wrap = el('div', { className: 'field' }, b);
+        parent.append(wrap);
+        controls.push({ spec, sync: () => b.classList.toggle('on', !!spec.get()), wrap });
+      }
+      function slider(parent, spec) {
+        const val = el('span', { className: 'val' });
+        const input = el('input', { type: 'range', min: spec.min, max: spec.max, step: spec.step });
+        input.addEventListener('input', () => (spec.set(Number(input.value)), changed()));
+        const wrap = el('div', { className: 'field' }, el('div', { className: 'label' }, el('span', { textContent: spec.label }), val), input);
+        parent.append(wrap);
+        controls.push({ spec, sync: () => ((input.value = spec.get()), (val.textContent = spec.format(spec.get()))), wrap });
+      }
+
+      // ── scenes ──
+      let currentScene = 0, freeN = null;   // freeN: the resolution to go back to after a test
+      const sceneButtons = [];
+      function switchScene(index) {
+        currentScene = (index + scenes.length) % scenes.length;
+        const s = scenes[currentScene];
+        if (s.N) ((freeN ??= cfg.N), (cfg.N = s.N));
+        else if (freeN) ((cfg.N = freeN), (freeN = null));
+        sceneButtons.forEach((b, i) => b.classList.toggle('on', i === currentScene));
+        $('scene-id').textContent = s.id;
+        dirty = true;
+        syncURL();
+      }
+      {
+        const list = $('scene-list');
+        let group = null;
+        scenes.forEach((s, i) => {
+          if (s.group !== group) list.append(el('div', { className: 'group', textContent: (group = s.group) }));
+          const b = el('button', { title: s.id }, el('span', { className: 'idx', textContent: i }), el('span', { textContent: s.name }));
+          b.addEventListener('click', () => (switchScene(i), changed()));
+          list.append(b);
+          sceneButtons.push(b);
+        });
+      }
+      const SIZES = [64, 128, 256, 512];
+      segmented($('scene-params'), {
+        label: 'resolution (N × N pixels)', title: 'tests set their own', options: SIZES.map((n) => [n, String(n)]),
+        get: () => cfg.N, set: (v) => ((cfg.N = v), (dirty = true)), enabled: () => !scenes[currentScene].N,
+      });
+
+      // the scene as radiance S and transmittance T per pixel, index x N + (N − 1 − y) (y down): solids take whole pixels by
+      // their centres (at least one pixel thick); volumes cover pixels by area, their optical depths adding and the radiance
+      // weighted by optical depth
+      function rasterise(N) {
+        const S = new Float32Array(N * N), T = new Float32Array(N * N).fill(1);
+        const k = N / SPAN, g = (u) => (u + SPAN / 2) * k;
+        const index = (x, y) => (x < 0 || y < 0 || x >= N || y >= N ? -1 : x * N + (N - 1 - y));
+        const overlap = (a0, a1, c) => Math.max(0, Math.min(a1, c + 1) - Math.max(a0, c));
+        const widen = (a, b) => (b - a >= 1 ? [a, b] : [(a + b) / 2 - 0.5, (a + b) / 2 + 0.5]);
+        for (const sh of scenes[currentScene].shapes) {
+          let [x0, x1, y0, y1] = [g(sh.x), g(sh.x + sh.w), g(sh.y), g(sh.y + sh.h)];
+          const t = pixelTransmittance(sh.opacity, N), b = sh.brightness;
+          if (t <= 0) [[x0, x1], [y0, y1]] = [widen(x0, x1), widen(y0, y1)];
+          for (let x = Math.floor(x0); x < Math.ceil(x1); x++)
+            for (let y = Math.floor(y0); y < Math.ceil(y1); y++) {
+              const i = index(x, y), c = overlap(x0, x1, x) * overlap(y0, y1, y);
+              if (i < 0 || c <= 0) continue;
+              if (t <= 0) {
+                if (x + 0.5 >= x0 && x + 0.5 < x1 && y + 0.5 >= y0 && y + 0.5 < y1) ((S[i] = b), (T[i] = 0));
+                continue;
+              }
+              if (T[i] <= 0) continue;
+              const d0 = -Math.log(T[i]), d1 = -Math.log(t), d = (1 - c) * d0 + c * d1;
+              S[i] = d > 0 ? ((1 - c) * d0 * S[i] + c * d1 * b) / d : 0;
+              T[i] = Math.exp(-d);
+            }
+        }
+        return { S, T };
+      }
+      // each scheme's own encoding of the scene
+      function encode(scheme, { S, T }) {
+        const n = S.length, E = new Float32Array(n), A = new Float32Array(n);
+        for (let i = 0; i < n; i++) {
+          const s = T[i] >= 1 ? 0 : S[i], t = T[i];
+          if (scheme === 'digital') ((E[i] = t <= 0 ? s : s * -Math.log(t)), (A[i] = t));   // a volume's emission per pixel: S σ
+          else if (scheme === 'polygonal') ((E[i] = t <= 0 ? s : 0), (A[i] = t <= 0 ? 0 : 1));   // solids only
+          else ((E[i] = s), (A[i] = t));
+        }
+        return { E, A };
+      }
+
+      // ── the two sides ──
+      function side(parent, key) {
+        parent.replaceChildren();
+        for (let i = controls.length - 1; i >= 0; i--) if (!controls[i].wrap.isConnected) controls.splice(i, 1);
+        const c = cfg[key];
+        segmented(parent, {
+          cols: 2, options: Object.entries(SCHEMES).map(([id, s]) => [id, s.name.replace(' HRC', '')]),
+          get: () => c.scheme, set: (v) => (Object.assign(cfg[key], { scheme: v }, defaults(v)), (dirty = true), side(parent, key)),
+        });
+        for (const [opt, label] of SCHEMES[c.scheme].options) toggle(parent, { label, get: () => c[opt], set: (v) => ((c[opt] = v), (dirty = true)) });
+        refresh();
+      }
+
+      const O = $('output');
+      toggle(O, { label: 'difference (B − A) / A', get: () => out.difference, set: (v) => ((out.difference = v), layout()) });
+      segmented(O, { label: 'map', options: [['linear', 'linear'], ['srgb', 'sRGB'], ['banded', 'banded']], get: () => out.map, set: (v) => ((out.map = v), (redraw = true)) });
+      slider(O, {
+        label: 'exposure', min: -1, max: 3, step: 0.05,
+        get: () => Math.log10(out.exposure), set: (v) => ((out.exposure = +(10 ** v).toPrecision(3)), (redraw = true)), format: (v) => String(+(10 ** v).toPrecision(3)),
+      });
+
+      // ── legend: the difference panel's colours (white at 10⁻⁵ or less, darkest at 1, reds B brighter, blues darker) ──
+      const BRIGHTER = [[1, 1, 1], [0.957, 0.647, 0.51], [0.839, 0.376, 0.302], [0.404, 0, 0.122]];
+      const DARKER = [[1, 1, 1], [0.573, 0.773, 0.871], [0.263, 0.576, 0.765], [0.02, 0.188, 0.38]];
+      function renderLegend() {
+        const L = $('legend');
+        L.replaceChildren();
+        if (!out.difference) return;
+        const colour = (t) => {
+          const s = t < 0.5 ? DARKER : BRIGHTER, m = (Math.round(Math.abs(2 * t - 1) * 50) / 50) * 3, i = Math.min(Math.floor(m), 2), f = m - i;
+          return `rgb(${s[i].map((a, k) => Math.round((a + (s[i + 1][k] - a) * f) * 255)).join(',')})`;
+        };
+        const bar = el('div', { className: 'bar' });
+        bar.style.background = `linear-gradient(to right, ${Array.from({ length: 101 }, (_, k) => `${colour(k / 100)} ${k}%`).join(',')})`;
+        const ticks = el('div', { className: 'ticks' });
+        for (const [x, label] of [[0, '−1'], [20, '−10⁻²'], [40, '−10⁻⁴'], [50, '0'], [60, '10⁻⁴'], [80, '10⁻²'], [100, '1']]) {
+          const s = el('span', { textContent: label });
+          Object.assign(s.style, { left: `${x}%`, transform: `translateX(${x === 0 ? '0' : x === 100 ? '-100%' : '-50%'})` });
+          ticks.append(s);
+        }
+        L.append(bar, ticks, el('div', { className: 'caption', textContent: 'difference: (B − A) / A in L · exposure (A floored at 0.01), log scale, 10 bands per decade; reds B brighter, blues darker; solids white' }));
+      }
+
+      // ── URL state ──
+      let urlReady = false;
+      function syncURL() {
+        if (!urlReady) return;
+        const p = new URLSearchParams();
+        if (currentScene !== 0) p.set('scene', scenes[currentScene].id);
+        if (!scenes[currentScene].N && cfg.N !== 256) p.set('N', cfg.N);
+        for (const key of ['a', 'b']) {
+          const c = cfg[key];
+          p.set(key, c.scheme);
+          for (const [opt, , def] of SCHEMES[c.scheme].options) if (c[opt] !== def) p.set(`${key}.${opt}`, c[opt] ? '1' : '0');
+        }
+        if (out.difference) p.set('difference', '1');
+        if (out.map !== 'srgb') p.set('map', out.map);
+        if (out.exposure !== 1) p.set('exposure', out.exposure);
+        history.replaceState(null, '', '?' + p);
+      }
+      function loadURL() {
+        const p = new URLSearchParams(location.search);
+        cfg.N = SIZES.includes(Number(p.get('N'))) ? Number(p.get('N')) : 256;
+        for (const key of ['a', 'b']) {
+          const scheme = SCHEMES[p.get(key)] ? p.get(key) : cfg[key].scheme;
+          cfg[key] = { scheme, ...defaults(scheme) };
+          for (const [opt] of SCHEMES[scheme].options) if (p.has(`${key}.${opt}`)) cfg[key][opt] = p.get(`${key}.${opt}`) === '1';
+        }
+        out.difference = p.get('difference') === '1';
+        out.map = ['linear', 'srgb', 'banded'].includes(p.get('map')) ? p.get('map') : 'srgb';
+        out.exposure = Number(p.get('exposure')) || 1;
+        const i = scenes.findIndex((s) => s.id === p.get('scene'));
+        return i >= 0 ? i : 0;
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // WebGPU
+      // ════════════════════════════════════════════════════════════════════
+      const fail = (msg) => (($('error').textContent = msg), $('error').classList.add('open'));
+      const adapter = await navigator.gpu?.requestAdapter();
+      if (!adapter) {
+        fail('WebGPU is not available in this browser.');
+        throw new Error('no WebGPU');
+      }
+      const device = await adapter.requestDevice({
+        requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize },
+      });
+      device.addEventListener('uncapturederror', (e) => (console.error(e.error.message), fail(e.error.message)));
+      const format = navigator.gpu.getPreferredCanvasFormat();
+
+      // one engine per side: the scheme's cascade, or a reference
+      const engines = { a: null, b: null };
+      function destroy(e) {
+        if (!e) return;
+        if (e.g.destroy) e.g.destroy();
+        else for (const v of Object.values(e.g)) if (v instanceof GPUBuffer) v.destroy();
+      }
+      function engine(key) {
+        const c = cfg[key], id = JSON.stringify([c, cfg.N]);
+        if (engines[key]?.id === id) return engines[key];
+        destroy(engines[key]);
+        const N = cfg.N, s = c.scheme;
+        const g = s === 'digital' ? new DigitalHRC(device, N, { solidLights: c.solidLights })
+          : s === 'polygonal' ? new PolygonalHRC(device, N, { runs: c.runs })
+          : s === 'pixel' ? new PixelExtensionHRC(device, N, { nearPixel: c.nearPixel, poleClamp: c.poleClamp })
+          : new Reference(device, N);
+        return (engines[key] = { id, scheme: s, g, version: -1 });
+      }
+      const output = (e) => (e.scheme === 'exact' ? e.g.exactOutput : e.scheme === 'pathTrace' ? e.g.pathTraceOutput : e.g.fluenceBuffer);
+
+      // the draw: per pixel, the scene's solids as their radiance (lights) or dark slate, else the panel's value
+      const field = (name) => /* wgsl */ `
+        fn ${name}At(kind: i32, x: i32, y: i32) -> f32 {   // fluence at pixel (x, y), y down
+          let n = i32(D.P.x); let yu = n - 1 - y;
+          if (kind == 0) { return ${name}[x * n + yu]; }
+          if (kind == 3) { return ${name}[x * n + yu] * 6.2831853; }
+          var sum = 0.0;
+          for (var k = 0; k < 4; k++) {
+            var cx = x + (k & 1); var cy = yu + (k >> 1);
+            if (kind == 1) { cx = clamp(cx, 1, n - 1); cy = clamp(cy, 1, n - 1); }
+            sum += ${name}[cx * (n + 1) + cy];
+          }
+          return 0.25 * sum;
+        }`;
+      const drawModule = device.createShaderModule({
+        code: /* wgsl */ `
+        @group(0) @binding(0) var<storage, read> M: array<vec2f>;   // per pixel (S, T)
+        @group(0) @binding(1) var<storage, read> FA: array<f32>;
+        @group(0) @binding(2) var<storage, read> FB: array<f32>;
+        struct Draw {
+          P: vec4f,   // N, exposure / 2π, map (0 linear, 1 sRGB, 2 banded), panel (0 A, 1 B, 2 difference)
+          Q: vec4f,   // canvas size in device pixels, kind of A, kind of B
+        }
+        @group(0) @binding(3) var<uniform> D: Draw;
+        const VIR = array<vec3f, 17>(vec3f(0.267, 0.0049, 0.3294), vec3f(0.2823, 0.095, 0.4173), vec3f(0.2788, 0.1755, 0.4834),
+          vec3f(0.259, 0.2515, 0.5247), vec3f(0.2297, 0.3224, 0.5457), vec3f(0.1994, 0.3876, 0.5546), vec3f(0.1727, 0.4488, 0.5579),
+          vec3f(0.149, 0.5081, 0.5573), vec3f(0.1276, 0.5669, 0.5506), vec3f(0.1206, 0.6258, 0.5335), vec3f(0.1579, 0.6838, 0.5017),
+          vec3f(0.2461, 0.7389, 0.452), vec3f(0.3692, 0.7889, 0.3829), vec3f(0.516, 0.8312, 0.2943), vec3f(0.6785, 0.8637, 0.1895),
+          vec3f(0.8456, 0.8873, 0.0997), vec3f(0.9932, 0.9062, 0.1439));
+        fn viridis(t: f32) -> vec3f { let s = clamp(t, 0.0, 1.0) * 16.0; let i = min(u32(s), 15u); return mix(VIR[i], VIR[i + 1u], s - f32(i)); }
+        fn srgb(c: vec3f) -> vec3f { return select(1.055 * pow(c, vec3f(1.0 / 2.4)) - 0.055, 12.92 * c, c <= vec3f(0.0031308)); }
+        ${field('FA')}
+        ${field('FB')}
+        // (B − A) / A in displayed units, A floored at 0.01, log scale from 1e-5 (white) to 1, bands of 0.1 decade
+        fn differenceColour(fa: f32, fb: f32, k: f32) -> vec3f {
+          let e = (fb - fa) * k / max(fa * k, 0.01);
+          let m = 3.0 * clamp((floor(log(max(abs(e), 1e-9)) / log(10.0) * 10.0) / 10.0 + 5.0) / 5.0, 0.0, 1.0);
+          var stops = array<vec3f, 4>(vec3f(1.0), vec3f(0.957, 0.647, 0.510), vec3f(0.839, 0.376, 0.302), vec3f(0.404, 0.0, 0.122));
+          if (e < 0.0) { stops = array<vec3f, 4>(vec3f(1.0), vec3f(0.573, 0.773, 0.871), vec3f(0.263, 0.576, 0.765), vec3f(0.020, 0.188, 0.380)); }
+          let i = min(u32(m), 2u);
+          return mix(stops[i], stops[i + 1u], m - f32(i));
+        }
+        @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+          let p = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0)); return vec4f(p[i], 0.0, 1.0);
+        }
+        @fragment fn fs(@builtin(position) q: vec4f) -> @location(0) vec4f {
+          let N = i32(D.P.x); let c = vec2i(floor(q.xy / D.Q.xy * D.P.x));
+          let m = M[c.x * N + (N - 1 - c.y)]; let panel = i32(D.P.w);
+          if (m.y <= 0.0) {
+            if (panel == 2) { return vec4f(1.0); }
+            return vec4f(select(vec3f(0.11, 0.115, 0.13), srgb(vec3f(min(1.0, m.x * 1.25))), m.x > 0.0), 1.0);
+          }
+          let fa = max(FAAt(i32(D.Q.z), c.x, c.y), 0.0);
+          if (panel == 2) { return vec4f(differenceColour(fa, max(FBAt(i32(D.Q.w), c.x, c.y), 0.0), D.P.y), 1.0); }
+          let f = select(fa, max(FBAt(i32(D.Q.w), c.x, c.y), 0.0), panel == 1) * D.P.y;
+          if (D.P.z > 1.5) { return vec4f(srgb(viridis((floor(log(max(f, 1e-9)) / log(10.0) * 10.0) / 10.0 + 2.2) / 2.2)), 1.0); }
+          return vec4f(srgb(vec3f(select(1.0 - exp(-f), min(f, 1.0), D.P.z < 0.5))), 1.0);
+        }`,
+      });
+      const drawPipe = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: { module: drawModule, entryPoint: 'vs' },
+        fragment: { module: drawModule, entryPoint: 'fs', targets: [{ format }] },
+        primitive: { topology: 'triangle-list' },
+      });
+
+      // panels: a canvas each, A and B, and the difference when shown
+      const panels = ['a', 'b', 'difference'].map((id) => {
+        const canvas = el('canvas'), name = el('div', { className: 'name' }), note = el('div', { className: 'note' });
+        const box = el('div', { className: 'panel' }, canvas, name, note);
+        const ctx = canvas.getContext('webgpu');
+        ctx.configure({ device, format, alphaMode: 'opaque' });
+        return { id, box, canvas, name, note, ctx, uniform: device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }) };
+      });
+      function layout() {
+        const area = $('canvas-area'), shown = panels.filter((p) => p.id !== 'difference' || out.difference);
+        for (const p of panels) p.box.remove();
+        area.prepend(...shown.map((p) => p.box));
+        const r = area.getBoundingClientRect(), gap = 12;
+        const d = Math.max(64, Math.floor(Math.min((r.width - 48 - gap * (shown.length - 1)) / shown.length, r.height - 96)));
+        for (const p of shown) {
+          Object.assign(p.canvas.style, { width: d + 'px', height: d + 'px' });
+          p.canvas.width = p.canvas.height = Math.round(d * (window.devicePixelRatio || 1));
+        }
+        redraw = true;
+      }
+      window.addEventListener('resize', layout);
+
+      // ── frame loop: solve when the scene or a scheme changes; redraw while a reference refines ──
+      let materials = null, busy = false;
+      async function frame() {
+        requestAnimationFrame(frame);
+        const ea = engines.a, eb = engines.b;
+        const refining = [ea, eb].some((e) => e && e.scheme !== 'digital' && e.scheme !== 'polygonal' && e.scheme !== 'pixel' && (e.g.version !== e.version || (e.scheme === 'pathTrace' && e.g.pathTraceFrames < 1024)));
+        if (busy || !(dirty || redraw || refining)) return;
+        busy = true;
+        const solve = dirty;
+        dirty = redraw = false;
+        const N = cfg.N, enc = device.createCommandEncoder(), scene = scenes[currentScene];
+        const sides = { a: engine('a'), b: engine('b') };
+        if (solve) {
+          const raster = rasterise(N);
+          materials?.destroy();
+          materials = device.createBuffer({ size: N * N * 8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+          const m = new Float32Array(N * N * 2);
+          for (let i = 0; i < N * N; i++) ((m[2 * i] = raster.S[i]), (m[2 * i + 1] = raster.T[i]));
+          device.queue.writeBuffer(materials, 0, m);
+          for (const e of Object.values(sides)) {
+            if (e.g instanceof Reference) e.g.upload(raster.S.map((s, i) => (raster.T[i] >= 1 ? 0 : s)), raster.T);
+            else {
+              const { E, A } = encode(e.scheme, raster);
+              e.g.upload(E, A);
+              e.g.encodeAll(enc);
+            }
+          }
+        }
+        for (const e of Object.values(sides)) {
+          if (e.scheme === 'pathTrace' && e.g.pathTraceFrames < 1024) e.g.encodePathTrace(enc);
+          if (e.scheme === 'exact') e.g.startExact(64 * N);
+          e.version = e.g.version;
+        }
+        const k = out.exposure / (2 * Math.PI), mapId = { linear: 0, srgb: 1, banded: 2 }[out.map];
+        const kinds = [KINDS[SCHEMES[sides.a.scheme].kind], KINDS[SCHEMES[sides.b.scheme].kind]];
+        panels.forEach((p, i) => {
+          if (p.id === 'difference' && !out.difference) return;
+          const which = p.id === 'difference' ? null : sides[p.id];
+          const unsupported = [sides.a, sides.b].filter((e) => (which ? e === which : true) && !SCHEMES[e.scheme].volumes && scene.shapes.some((s) => s.opacity < 1));
+          p.note.textContent = unsupported.length ? `${SCHEMES[unsupported[0].scheme].name} models solids only; this scene has volumes` : '';
+          p.note.style.display = unsupported.length ? '' : 'none';
+          p.name.textContent = which ? `${p.id.toUpperCase()}: ${SCHEMES[which.scheme].name}` : 'difference: (B − A) / A';
+          device.queue.writeBuffer(p.uniform, 0, new Float32Array([N, k, mapId, i, p.canvas.width, p.canvas.height, kinds[0], kinds[1]]));
+          const bg = device.createBindGroup({
+            layout: drawPipe.getBindGroupLayout(0),
+            entries: [materials, output(sides.a), output(sides.b), p.uniform].map((buffer, binding) => ({ binding, resource: { buffer } })),
+          });
+          const pass = enc.beginRenderPass({ colorAttachments: [{ view: p.ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
+          pass.setPipeline(drawPipe);
+          pass.setBindGroup(0, bg);
+          pass.draw(3);
+          pass.end();
+        });
+        device.queue.submit([enc.finish()]);
+        await device.queue.onSubmittedWorkDone();
+        $('status').textContent = Object.entries(sides).map(([key, e]) => {
+          if (e.scheme === 'pathTrace') return `${key.toUpperCase()}: ${e.g.pathTraceFrames * 16} samples per pixel`;
+          if (e.scheme === 'exact') { const st = e.g.exactProgress; return `${key.toUpperCase()}: exact ${st ? (st.done ? 'done' : `${(st.fraction * 100).toFixed(0)} %`) : '…'}`; }
+          return '';
+        }).filter(Boolean).join(' · ');
+        busy = false;
+      }
+
+      // ── init ──
+      const initScene = loadURL();
+      side($('side-a'), 'a');
+      side($('side-b'), 'b');
+      switchScene(initScene);
+      urlReady = true;
+      changed();
+      layout();
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,756 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reciprocal HRC</title>
+    <meta name="description" content="HRC with a merge that reads each cN+1 ray at its own start probe, through its own first half: no reprojection, and light from p to q equals light from q to p" />
+    <meta name="order" content="5" />
+    <link rel="stylesheet" href="../_shared/page.css" />
+    <style>
+      #right {
+        border-left: 1px solid var(--line);
+        overflow: hidden;
+      }
+      /* the explainer scrolls on its own; output and the tools stay on screen */
+      #tools {
+        margin-top: 0;
+      }
+      /* narrow screens: the canvas on top, the panels below it, one page scroll */
+      @media (max-width: 760px) {
+        html,
+        body {
+          height: auto;
+          overflow: auto;
+        }
+        body {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        #canvas-area {
+          order: -1;
+          height: min(100vw, 72vh);
+        }
+        aside,
+        #right,
+        #explainer {
+          overflow: visible;
+        }
+        #left,
+        #right {
+          border: 0;
+          border-top: 1px solid var(--line);
+        }
+      }
+      /* status / tools */
+      #fps {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--dim);
+        margin-right: auto;
+        cursor: pointer;
+      }
+      /* help + perf overlays (inside the canvas area) */
+      .gpu-profiler {
+        position: absolute;
+        left: 12px;
+        top: 12px;
+        z-index: 20;
+      }
+      /* the cascade's square (one canvas pixel per pixel of the grid, scaled with nearest-neighbour sampling) */
+      #view {
+        position: absolute;
+        image-rendering: pixelated;
+        touch-action: none;
+        cursor: crosshair;
+      }
+      #view.grab {
+        cursor: grab;
+      }
+      #view.grabbing {
+        cursor: grabbing;
+      }
+      #error {
+        position: absolute;
+        inset: 0;
+        display: none;
+        place-items: center;
+        color: var(--dim);
+        padding: 24px;
+        text-align: center;
+      }
+      /* two toggles side by side */
+      .pair {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0 12px;
+        margin-top: 10px;
+      }
+      .pair .field {
+        margin-top: 0;
+      }
+      /* the scene locks while a reference is shown: no drawing or editing, and an outline around the square */
+      body.locked #pen {
+        opacity: 0.4;
+        pointer-events: none;
+      }
+      body.locked #view {
+        outline: 2px solid var(--lock);
+        outline-offset: 3px;
+        cursor: default;
+      }
+      #error.open {
+        display: grid;
+      }
+    </style>
+  </head>
+  <body>
+    <aside id="left">
+      <section>
+        <h2>scene <small id="scene-id"></small></h2>
+        <div id="scene-list"></div>
+      </section>
+      <section>
+        <div id="scene-params"></div>
+      </section>
+      <section id="pen">
+        <h2><span id="pen-title">pen</span> <small id="pen-sub"></small></h2>
+        <div id="pen-fields"></div>
+        <div id="size-field"></div>
+      </section>
+    </aside>
+
+    <div id="canvas-area">
+      <canvas id="view"></canvas>
+      <div id="help"></div>
+      <div id="error"></div>
+    </div>
+
+    <aside id="right">
+      <section id="explainer">
+        <h2>reciprocal HRC</h2>
+        <figure id="merge-figure"></figure>
+        <p>There is no ½ near/far blend on even planes and no reprojection, and each ray stores one merged radiance. The
+          merge is reciprocal: light from p to q equals light from q to p, with any walls (<math><mi>K</mi><mo>=</mo><msup><mi>K</mi><mi mathvariant="normal">T</mi></msup></math> before the
+          solid mask and the row blur).</p>
+        <p>As in HRC's extensions, a ray is two half-length rays chained at its midpoint. When the halves can't have the
+          same slope, the ray averages both bent orders, as HRC builds its odd rays.</p>
+        <figure id="halves-figure"></figure>
+        <p>The merge runs the same pairs of halves backwards, from the top cascade down, with the same weights. A ray on an
+          even plane (a left half) takes its parent's merged radiance <math><mi>M</mi></math> as it is: the near-plane read.
+          A ray on an odd plane (a right half) takes it through the left half, plus the left half's own radiance times the
+          parent's cone weight <math><mi>c</mi></math>.</p>
+        <figure id="rays-figure"></figure>
+      </section>
+      <section>
+        <h2>output</h2>
+        <div id="output"></div>
+        <div id="legend"></div>
+      </section>
+      <section id="tools">
+        <span id="fps" title="wall time per solve, from rasterising to GPU done, averaged over edits; click for the GPU profile"></span>
+        <button id="shot-btn" title="screenshot (s)">shot</button>
+        <button id="help-btn" title="keyboard shortcuts (?)">?</button>
+      </section>
+    </aside>
+
+    <script type="module">
+      // Scenes are rectangles in scene units, rasterised on the CPU; ./reciprocal-hrc.ts solves them.
+      import { ReciprocalHRC } from './reciprocal-hrc';
+      import { raysDiagram, halvesDiagram, mergeDiagrams, legendKey, C } from './diagram';
+      import { scenesFor, SPAN, pixelTransmittance } from '../_shared/scenes';
+      import { Reference } from '../_shared/reference';
+      import { Profiler } from '../_shared/profiler';
+      import { DISPLAY_WGSL, EXPOSURE, EXPOSURE_CONTROL, BANDED_LEGEND, MAP_CONTROL, MAP_INDEX } from '../_shared/display';
+      import { $, el, createControls, fieldFor, writeControls, readControls, sceneFromURL, replaceURL } from '../_shared/ui';
+      import { DRAW_WGSL } from '../_shared/draw';
+      import { outputPanel, EXACT_DENSITY } from '../_shared/output-panel';
+      import { sceneList, penPointer, PEN_SIZES, nextPenSize } from '../_shared/scene-panel';
+
+      const view = $('view');
+      // explainer figures: a formula's letters take the colour of the mark they name
+      {
+        const mi = (x, colour) => `<mi${colour ? ` mathcolor='${colour}'` : ''}>${x}</mi>`;
+        const sub = (a, b, colour, aColour) => `<msub>${mi(a, aColour)}${mi(b, colour)}</msub>`;
+        const math = (x) => `<math>${x}</math>`;
+        const Ap = `<msub><mi>A</mi><mi>p</mi></msub>`;   // not labelled in the figure, so not coloured
+        const symbols = (lines) => `<dl class='symbols'>${lines.map(([m, text]) => `<dt>${math(m)}</dt><dd>${text}</dd>`).join('')}</dl>`;
+        const formula = (m) => `<div class='panel-formula'>${math(m)}</div>`;
+        const hrcFormula = formula(sub('M', 'P', C.write) + '<mo>=</mo>' + sub('T', 'P', C.write) + sub('M', 'Q', C.read) + '<mo>+</mo><mi>c</mi>' + sub('R', 'P', C.write));
+        const recFormula = formula(sub('M', 'B', C.half) + '<mo>=</mo><msub><mo>∑</mo><mi>p</mi></msub>' + sub('w', 'p') + '<mo>(</mo><msub><mi>T</mi>' + Ap + '</msub>' + sub('M', 'p') + '<mo>+</mo>' + sub('c', 'p') + '<msub><mi>R</mi>' + Ap + '</msub><mo>)</mo>');
+        const merge = mergeDiagrams();
+        $('merge-figure').innerHTML = merge.hrc + hrcFormula + merge.reciprocal2x + merge.reciprocal + recFormula +
+          '<figcaption>' + legendKey([
+            ['dot', C.parent, 'the cN+1 rays (parents), odd rays in both bent orders'],
+            ['dot', C.child, "the cN rays read through: P's own ray in HRC, each parent's left half in reciprocal HRC"],
+            ['dot', C.read, "where the parents' merged radiance is read"],
+            ['dot', C.write, 'where the merge writes'],
+            ['letter', C.read, "HRC's c3 probe, where all three parents are read", 'Q'],
+            ['letter', C.write, "HRC's c2 probe, whose ray the merge writes", 'P'],
+            ['letter', C.half, 'the ray reciprocal HRC merges: the right half of all three parents', 'B'],
+            ['letter', C.dim, "each parent's weight, by the row it is read on", '½'],
+          ]) +
+          symbols([
+            [mi('M'), 'merged radiance: the light arriving from beyond'],
+            [mi('R') + '<mo>,</mo>' + mi('T'), "a ray's own radiance and transmittance"],
+            [mi('c') + '<mo>,</mo>' + sub('c', 'p'), "cone weight (normal HRC: P's two sub-cones)"],
+            [sub('w', 'p'), "parent p's weight: 1, or ½ if bent"],
+            [Ap, "parent p's left half (orange)"],
+            [sub('M', 'p'), "parent p's merged radiance, read at its start (light blue)"],
+          ]) +
+          "One merge step: a ray of length 4 (reciprocal HRC's B, HRC's P) from parents of length 8. Reciprocal HRC reads each parent at its own start probe, through its own left half. At the default 2× base ray count a ray of rise " + math('<mi>e</mi>') + ' has parents of rise ' + math('<mn>2</mn><mi>e</mi>') + ' and ' + math('<mn>2</mn><mi>e</mi><mo>±</mo><mn>1</mn>') + ' (here 0 and ±1); at 1×, ' + math('<mn>2</mn><mi>e</mi>') + ' and ' + math('<mn>2</mn><mi>e</mi><mo>±</mo><mn>2</mn>') + ". HRC reads all three at Q, the end of P's own ray, so the bent parents' light reaches P along a line it never crossed (the reprojection). With every slope, HRC's reprojection double-counts light along the axis and its error grows. " +
+          'Not shown: even planes. There HRC takes ½ the far-plane read and ½ the near-plane read; reciprocal HRC takes ' + math(sub('M', 'p')) + ' as it is, the near-plane read alone.</figcaption>';
+        $('halves-figure').innerHTML = halvesDiagram() +
+          "<div class='panel-captions'>" +
+          `<div><math display='block'><mi>R</mi><mo>=</mo>${sub('R', 'B', C.half)}<mo>+</mo>${sub('T', 'B', C.half)}${sub('R', 'A', C.child)}</math><math display='block'><mi>T</mi><mo>=</mo>${sub('T', 'A', C.child)}${sub('T', 'B', C.half)}</math></div>` +
+          `<div><math display='block'>${sub('M', 'A', C.child)}<mo>=</mo><mi>M</mi></math><math display='block'>${sub('M', 'B', C.half)}<mo>=</mo>${sub('T', 'A', C.child)}<mi>M</mi><mo>+</mo><mi>c</mi>${sub('R', 'A', C.child)}</math></div>` +
+          '</div>' +
+          '<figcaption>' + legendKey([
+            ['letter', C.child, 'ray A, the left half of one ray of length 4', 'A'],
+            ['letter', C.half, 'ray B, its right half (both halves rise 1 here)', 'B'],
+            ['dot', C.midpoint, 'the midpoint, where A ends and B starts'],
+            ['dot', C.write, "where each pass writes: the extensions at the ray's right end, the merge at each half's left end"],
+          ]) +
+          symbols([
+            [mi('R') + '<mo>,</mo>' + mi('T'), "the radiance leaving a ray's right end, and its transmittance"],
+            [mi('M'), 'merged radiance: the light arriving at its left end from beyond'],
+            [mi('c'), "the parent ray's cone weight"],
+          ]) + '</figcaption>';
+        $('rays-figure').innerHTML = raysDiagram() +
+          '<figcaption>' + legendKey([
+            ['dot', C.parent, 'the c2 rays (length 4) from one probe at a 2× base ray count, one per slope'],
+            ['dot', C.read, 'the probe they start from (a 1-px span)'],
+            ['mark', C.dim, 'the slopes a 1× base ray count keeps (every other one)'],
+          ]) + "Each ray's cone weight is the angle its far 1-px span subtends from the centre of the probe.</figcaption>";
+      }
+
+      // config rebuilds the engine when it changes; display only redraws
+      const config = { N: 256, baseRayCount: 2, rowBlur: true };
+      const display = { scene: false, map: 'tone', stops: 0 };
+      // reference view: 0 none, 1 path trace, 2 exact, 3 and 4 the error against them; the scene locks while one is shown
+      let refMode = 0, reference = null, drawnVersion = -1;
+      const locked = () => refMode !== 0;
+      const pathTracing = () => refMode === 1 || refMode === 3;
+
+      let dirty = true, redraw = true;
+      const touch = () => (dirty = true);
+
+      const { controls, toggle, segmented, slider, pill, syncControls } = createControls(() => changed());
+      const field = fieldFor(() => touch());
+      function refresh() {
+        syncControls();
+        renderLegend();
+      }
+      function changed() {
+        refresh();
+        syncURL();
+      }
+
+      // a shape: { x, y, w, h, b, rgb, o } in scene units, y down; b its luminance, rgb linear, o below 1 a medium
+      let shapes = [], strokes = [];
+      const scenes = scenesFor({ volumes: true }).map((s) => ({ ...s, shapes: s.shapes.map(({ x, y, w, h, brightness: b, color, opacity }) => ({ x, y, w, h, b, rgb: color ?? [b, b, b], o: opacity })) }));
+
+      const sceneUI = sceneList({
+        list: $('scene-list'),
+        label: $('scene-id'),
+        scenes,
+        resolution: { get: () => config.N, set: (n) => (config.N = n) },
+        load: (s) => {
+          shapes = s.shapes.map((sh) => ({ ...sh, rgb: [...sh.rgb] }));
+          strokes = [];
+          selectShape(null);
+        },
+        after: () => (touch(), syncURL()),
+        changed: () => changed(),
+      });
+      const switchScene = sceneUI.switchTo;
+
+      // pixel (gx, gy), gy down, is index gx N + (N - 1 - gy). A shape takes the pixels whose centres it covers, at least
+      // one pixel thick.
+      let emission = null, solid = null, absorption = null, cursor = null;
+      function rasterise(N) {
+        emission.fill(0);
+        solid.fill(0);
+        absorption.fill(0);
+        const scale = N / SPAN, toPixels = (u) => (u + SPAN / 2) * scale;
+        // a medium: absorption per pixel of path length, and with brightness its source radiance
+        const put = (gx, gy, m) => {
+          if (gx < 0 || gy < 0 || gx >= N || gy >= N) return;
+          const volume = m.o !== undefined && m.o < 1;
+          const i = gx * N + (N - 1 - gy);
+          solid[i] = volume ? 0 : 1;
+          absorption[i] = volume ? -Math.log(pixelTransmittance(m.o, N)) : 0;
+          emission.set(m.b > 0 ? m.rgb : [0, 0, 0], 3 * i);
+        };
+        const widen = (a, b) => (b - a >= 1 ? [a, b] : [(a + b) / 2 - 0.5, (a + b) / 2 + 0.5]);
+        const box = (x0, x1, y0, y1, m) => {
+          [[x0, x1], [y0, y1]] = [widen(x0, x1), widen(y0, y1)];
+          const first = (a) => Math.ceil(a - 0.5);
+          for (let x = first(x0); x < first(x1); x++) for (let y = first(y0); y < first(y1); y++) put(x, y, m);
+        };
+        // a brush of `size` pixels swept from a to b
+        const sweep = (ax, ay, bx, by, size, m) => {
+          const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) * 4)), h = size / 2;
+          for (let t = 0; t <= n; t++) {
+            const cx = ax + ((bx - ax) * t) / n, cy = ay + ((by - ay) * t) / n;
+            box(cx - h, cx + h, cy - h, cy + h, m);
+          }
+        };
+        for (const s of shapes) box(toPixels(s.x), toPixels(s.x + s.w), toPixels(s.y), toPixels(s.y + s.h), s);
+        for (const s of strokes) sweep(toPixels(s.x0), toPixels(s.y0), toPixels(s.x1), toPixels(s.y1), s.size * scale, s);
+        if (cursor && !locked() && pen.kind !== 'eraser' && !pointer.dragging()) sweep(toPixels(cursor[0]), toPixels(cursor[1]), toPixels(cursor[0]), toPixels(cursor[1]), pen.size, penMaterial());
+      }
+
+      // pen and shape inspector
+      const KINDS = [
+        ['light', 'light', 'a glowing solid'],
+        ['solid', 'solid', 'solid and dark'],
+        ['medium', 'medium', 'absorbs (density σ) and glows (source S)'],
+        ['eraser', 'eraser', 'erase strokes'],
+      ];
+      // a medium's density σ is per reference pixel (1/256 of the square), stored as opacity 1 - e^(-σ) like the shared scenes
+      const pen = { kind: 'light', brightness: 1, density: 0.2, size: 2 };
+      let selected = null;
+      const kindOf = (m) => (m.o !== undefined && m.o < 1 ? 'medium' : m.b > 0 ? 'light' : 'solid');
+      const grey = (b) => [b, b, b];
+      const densityOf = (m) => (m.o !== undefined && m.o < 1 ? -Math.log(1 - m.o) : pen.density);
+      const penMaterial = () => {
+        const b = pen.kind === 'solid' ? 0 : pen.brightness;
+        return { b, rgb: grey(b), ...(pen.kind === 'medium' ? { o: 1 - Math.exp(-pen.density) } : {}) };
+      };
+      const shapeState = (s) => ({ kind: kindOf(s), brightness: s.b, density: densityOf(s) });
+      const setPenSize = (v) => ((pen.size = v), touch(), refresh());
+      const stepPenSize = (d) => setPenSize(nextPenSize(pen.size, d));
+      // a shape keeps its colour when its brightness changes: rgb scales with b
+      const setBrightness = (s, b) => {
+        const k = s.b > 0 ? b / s.b : 1;
+        s.rgb = s.b > 0 ? s.rgb.map((c) => c * k) : grey(b);
+        s.b = b;
+      };
+      const setPen = (key, v) => {
+        if (selected && v === 'eraser') return;
+        if (!selected) {
+          pen[key] = v;
+          if (key === 'kind' && v === 'light' && pen.brightness <= 0) pen.brightness = 1;
+        } else if (key === 'kind') {
+          setBrightness(selected, v === 'solid' ? 0 : v === 'medium' ? selected.b : selected.b > 0 ? selected.b : 1);
+          if (v === 'medium') selected.o = 1 - Math.exp(-densityOf(selected));
+          else delete selected.o;
+        } else if (key === 'brightness' && (selected.b > 0 || kindOf(selected) === 'medium')) setBrightness(selected, Math.max(v, kindOf(selected) === 'medium' ? 0 : 1e-3));
+        else if (key === 'density' && kindOf(selected) === 'medium') selected.o = 1 - Math.exp(-Math.max(v, 1e-4));
+        touch();
+      };
+      const penGet = (key) => (selected ? shapeState(selected)[key] : pen[key]);
+      segmented($('pen-fields'), { cols: 4, options: KINDS, get: () => penGet('kind'), set: (k) => setPen('kind', k) });
+      slider($('pen-fields'), {
+        label: 'brightness',
+        title: 'a light\'s radiance, or a medium\'s source S (luminance)',
+        min: 0, max: 4, step: 0.01,
+        get: () => penGet('brightness'), set: (v) => setPen('brightness', v), format: (v) => v.toFixed(2),
+        enabled: () => penGet('kind') === 'light' || penGet('kind') === 'medium',
+      });
+      slider($('pen-fields'), {
+        label: 'density σ',
+        title: 'extinction per reference pixel (1/256 of the square)',
+        min: 0, max: 1, step: 0.01,
+        get: () => Math.cbrt(penGet('density') / 3), set: (v) => setPen('density', 3 * v ** 3),
+        format: (v) => { const d = 3 * v ** 3; return d < 0.1 ? d.toFixed(3) : d.toFixed(2); },
+        enabled: () => penGet('kind') === 'medium',
+      });
+      function syncPen() {
+        $('pen-title').textContent = selected ? 'shape' : 'pen';
+        $('pen-sub').textContent = selected ? 'selected · ⌫ deletes · esc' : '';
+        $('size-field').style.display = selected ? 'none' : '';
+        refresh();
+      }
+      function selectShape(s) {
+        selected = s;
+        syncPen();
+      }
+
+      const SIZES = [64, 128, 256, 512, 1024];
+      segmented($('scene-params'), { label: 'resolution', title: 'tests set their own', options: SIZES.map((n) => [n, String(n)]), ...field(config, 'N'), enabled: () => !scenes[sceneUI.current].N, url: ['N', 256] });
+      segmented($('size-field'), { label: 'size', options: PEN_SIZES.map((n) => [n, String(n)]), get: () => pen.size, set: setPenSize });
+
+      segmented($('scene-params'), {
+        label: 'base ray count',
+        key: 'r',
+        options: [
+          [1, '1× (HRC\'s)', 'L + 1 rays per probe at length L, HRC\'s own'],
+          [2, '2×', '2L + 1 rays per probe at length L: every line in exactly one ray'],
+        ],
+        get: () => config.baseRayCount,
+        set: (v) => ((config.baseRayCount = v), touch()),
+        url: ['rays', 2],
+      });
+      toggle($('scene-params'), { label: '[1 2 1] row blur', title: 'blurs each axis\'s fluence [¼ ½ ¼] across its rows over empty pixels, removing the row-to-row checkerboard', ...field(config, 'rowBlur'), url: ['blur', true] });
+
+      const output = outputPanel($('output'), {
+        controls: { segmented, slider, pill },
+        display: display,
+        redraw: () => (redraw = true),
+        reference: { get: () => refMode, set: setReference },
+        referenceTitle: 'a reference of the same scene (each pixel\'s mean), or the scheme\'s difference from it; the scene locks while one is shown',
+        sceneTitle: 'lights red, solids blue',
+        luminance: true,
+      });
+      function renderLegend() {
+        output.legend($('legend'));
+      }
+
+      let urlReady = false;
+      function syncURL() {
+        if (!urlReady) return;
+        const p = new URLSearchParams();
+        if (sceneUI.current !== 0) p.set('scene', scenes[sceneUI.current].id);
+        writeControls(p, controls, (name, v) => (name === 'N' && sceneUI.freeN ? sceneUI.freeN : v));   // a test's resolution is not saved
+        if (profiler.enabled) p.set('profile', '1');
+        replaceURL(p);
+      }
+      function loadURL() {
+        const p = new URLSearchParams(location.search);
+        readControls(p, controls);
+        if (!SIZES.includes(config.N)) config.N = 256;
+        return sceneFromURL(p, scenes);
+      }
+
+      const fail = (msg) => {
+        $('error').textContent = msg;
+        $('error').classList.add('open');
+      };
+      const adapter = await navigator.gpu?.requestAdapter();
+      if (!adapter) {
+        fail('WebGPU is not available in this browser.');
+        throw new Error('no WebGPU');
+      }
+      const device = await adapter.requestDevice({
+        requiredFeatures: Profiler.features(adapter),
+        requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize },
+      });
+      // GPU profile (off until switched on): while on, the scene is solved every frame
+      const profiler = new Profiler(device);
+      $('canvas-area').append(profiler.panel());
+      device.addEventListener('uncapturederror', (e) => {
+        console.error(e.error.message);
+        fail(e.error.message);
+      });
+      const ctx = view.getContext('webgpu');
+      const format = navigator.gpu.getPreferredCanvasFormat();
+      ctx.configure({ device, format, alphaMode: 'opaque' });
+
+      // one value per pixel: the scheme's fluence (rgb), the reference's mean radiance at the pixel centre (luminance);
+      // lights and solids show the scene
+      const drawModule = device.createShaderModule({
+        code: /* wgsl */ `
+        @group(0) @binding(0) var<storage, read> fluence: array<vec4f>;   // (fluence rgb, its luminance), [x * N + y]
+        @group(0) @binding(1) var<storage, read> scene: array<vec4f>;     // (emission rgb, 1 free / 0 solid)
+        struct Draw {
+          view: vec4f,     // N, E / 2π (fluence → exposed mean radiance), map (0 tone map, 1 banded), reference view
+          canvas: vec4f,   // canvas size in device pixels, unused, scene (0 / 1)
+          clip: vec4f,     // error clip (errors of at least it show magenta), unused
+        }
+        @group(0) @binding(2) var<uniform> draw: Draw;
+        @group(0) @binding(3) var<storage, read> reference: array<f32>;   // the reference's mean radiance over each pixel, [x * N + y]
+        ${DISPLAY_WGSL}
+        ${DRAW_WGSL}
+        @fragment fn fragmentMain(@builtin(position) fragment: vec4f) -> @location(0) vec4f {
+          let view = draw.view;
+          let N = i32(view.x); let at = fragment.xy / draw.canvas.xy * view.x;   // pixel units, y down
+          let pixel = vec2i(floor(at));
+          let i = u32(pixel.x * N + (N - 1 - pixel.y));
+          let material = scene[i];
+          let tint = draw.canvas.w > 0.5;   // the scene: lights red, solids blue, media blue by density
+          let mode = i32(view.w);
+          if (material.w <= 0.0) {   // opaque: lights show their colour, solids dark slate (a medium receives, and shows its fluence)
+            if (any(material.rgb > vec3f(0.0))) { return vec4f(select(srgbEncode(min(vec3f(1.0), material.rgb * 0.8)), vec3f(1.0, 0.2, 0.15), tint), 1.0); }
+            return vec4f(select(select(vec3f(0.11, 0.115, 0.13), vec3f(1.0), mode >= 3), vec3f(0.15, 0.3, 1.0), tint), 1.0);
+          }
+          let scheme = fluence[i];
+          let exact = reference[i] * 6.2831853;
+          if (mode >= 3) { return vec4f(errorColour(scheme.w, exact, view.y, draw.clip.x), 1.0); }
+          var colour = displayed(select(vec3f(exact), scheme.rgb, mode == 0) * view.y, view.z);
+          if (tint && material.w < 1.0) { colour = mix(colour, vec3f(0.15, 0.3, 1.0), 0.25 + 0.6 * (1.0 - material.w)); }   // media by how much they absorb
+          return dither(colour, fragment.xy);
+        }`,
+      });
+      const drawPipe = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: { module: drawModule, entryPoint: 'vertexMain' },
+        fragment: { module: drawModule, entryPoint: 'fragmentMain', targets: [{ format }] },
+        primitive: { topology: 'triangle-list' },
+      });
+      const drawUniforms = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+      let engineNow = null;
+      // whether an engine solves the current config
+      const current = (g) => g?.N === config.N && g.baseRayCount === config.baseRayCount && g.rowBlur === config.rowBlur;
+      function engine() {
+        const N = config.N;
+        if (current(engineNow)) return engineNow;
+        engineNow?.destroy();
+        engineNow = new ReciprocalHRC(device, N, { baseRayCount: config.baseRayCount, rowBlur: config.rowBlur });
+        engineNow.profiler = profiler;
+        profiler.reset();
+        if (reference?.N !== N) {   // the reference depends on the scene and N only, not on the scheme's settings
+          reference?.destroy();
+          reference = new Reference(device, N, { probes: 'cell' });   // pixel means, like the scheme's output
+        }
+        emission = new Float32Array(N * N * 3);
+        solid = new Float32Array(N * N);
+        absorption = new Float32Array(N * N);
+        layout();
+        return engineNow;
+      }
+      function encodeDraw(encoder, cascade, timestampWrites) {
+        device.queue.writeBuffer(drawUniforms, 0, new Float32Array([
+          cascade.N, (EXPOSURE * 2 ** display.stops) / (2 * Math.PI), MAP_INDEX[display.map], refMode,
+          view.width, view.height, 0, display.scene ? 1 : 0,
+          output.clip(), 0, 0, 0,
+        ]));
+        const referenceBuffer = pathTracing() ? reference.pathTraceOutput : reference.exactOutput;
+        const drawBG = device.createBindGroup({
+          layout: drawPipe.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: cascade.outputBuffer } },
+            { binding: 1, resource: { buffer: cascade.sceneBuffer } },
+            { binding: 2, resource: { buffer: drawUniforms } },
+            { binding: 3, resource: { buffer: referenceBuffer } },
+          ],
+        });
+        const pass = encoder.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }], timestampWrites });
+        pass.setPipeline(drawPipe);
+        pass.setBindGroup(0, drawBG);
+        pass.draw(3);
+        pass.end();
+      }
+
+      function setReference(v) {
+        refMode = v;
+        document.body.classList.toggle('locked', locked());
+        if (locked()) ((cursor = null), selectShape(null));
+        if (!(refMode === 2 || refMode === 4)) reference?.pauseExact();
+        touch();   // solve again (without the cursor's light) and give the reference this scene
+      }
+      function renderRefStatus() {
+        output.status(reference);
+      }
+      // mono: lights opaque with their luminance as radiance, media of transmittance e^(-σ) per pixel of path
+      function uploadReference() {
+        const radiance = new Float32Array(solid.length), transmittance = new Float32Array(solid.length);
+        for (let i = 0; i < solid.length; i++) {
+          radiance[i] = 0.2126 * emission[3 * i] + 0.7152 * emission[3 * i + 1] + 0.0722 * emission[3 * i + 2];
+          transmittance[i] = solid[i] ? 0 : Math.exp(-absorption[i]);
+        }
+        reference.upload(radiance, transmittance);
+      }
+
+      // the largest square in the canvas area, 32 px margin
+      const squareRect = () => view.getBoundingClientRect();
+      function layout() {
+        const r = $('canvas-area').getBoundingClientRect();
+        const d = Math.max(64, Math.floor(Math.min(r.width - 64, r.height - 64)));
+        Object.assign(view.style, { width: d + 'px', height: d + 'px', left: Math.floor((r.width - d) / 2) + 'px', top: Math.floor((r.height - d) / 2) + 'px' });
+        view.width = view.height = Math.round(d * (window.devicePixelRatio || 1));
+        redraw = true;
+      }
+      window.addEventListener('resize', layout);
+
+      const renderPasses = (cascade) => (profiler.info = `${cascade.dispatches} dispatches per frame · ${(cascade.bytes / 2 ** 20).toFixed(0)} MiB of stores (${Math.round(cascade.bytes / cascade.N / cascade.N)} B per pixel)`);
+
+      // solve only when the scene changed; redraw when the output settings changed
+      let busy = false, frameMs = 0, solveN = 0;
+      async function frame() {
+        requestAnimationFrame(frame);
+        if (refMode && reference && (reference.version !== drawnVersion || (pathTracing() && reference.pathTraceFrames < 1024))) redraw = true;
+        if (busy || !(dirty || redraw || profiler.enabled)) return;
+        busy = true;
+        const scene = dirty, solve = dirty || profiler.enabled;
+        dirty = redraw = false;
+        const fresh = !current(engineNow);
+        const cascade = engine();
+        const t0 = performance.now();
+        if (scene) {
+          rasterise(cascade.N);
+          cascade.upload({ emission, solid, absorption });
+          profiler.traffic.clear();
+          for (const [label, t] of Object.entries(cascade.traffic())) profiler.traffic.set(label, t);
+          renderPasses(cascade);
+        }
+        profiler.beginFrame();
+        const encoder = device.createCommandEncoder();
+        if (solve) cascade.encodeAll(encoder);
+        if (refMode) {
+          if (scene) uploadReference();
+          if (pathTracing() && reference.pathTraceFrames < 1024) reference.encodePathTrace(encoder);
+          if (refMode === 2 || refMode === 4) reference.startExact(EXACT_DENSITY * cascade.N);
+          drawnVersion = reference.version;
+          renderRefStatus();
+        }
+        encodeDraw(encoder, cascade, profiler.timestampWrites('draw'));
+        profiler.endFrame(encoder);
+        device.queue.submit([encoder.finish()]);
+        profiler.collect();
+        await device.queue.onSubmittedWorkDone();
+        if (scene && !fresh) {   // the first solve after a rebuild includes pipeline compilation
+          const ms = performance.now() - t0;
+          frameMs = solveN === cascade.N ? frameMs + (ms - frameMs) * 0.3 : ms;   // restart at a new N
+          solveN = cascade.N;
+        }
+        busy = false;
+      }
+      setInterval(() => ($('fps').textContent = profiler.enabled ? `${config.N}² · GPU ${profiler.stats().gpuMs.toFixed(1)} ms, profiled`
+        : solveN === config.N ? `${solveN}² · ${frameMs.toFixed(1)} ms wall` : `${config.N}² · move to time`), 250);
+
+      function screenshot() {
+        const cascade = engine(), encoder = device.createCommandEncoder();
+        encodeDraw(encoder, cascade);
+        device.queue.submit([encoder.finish()]);
+        view.toBlob((b) => b && Object.assign(document.createElement('a'), { href: URL.createObjectURL(b), download: `reciprocal-hrc-${scenes[sceneUI.current].id}-${cascade.N}-${Date.now()}.png` }).click());
+      }
+      $('shot-btn').addEventListener('click', screenshot);
+      const toggleProfile = (on = !profiler.enabled) => {
+        profiler.enabled = on;
+        syncURL();
+      };
+      $('fps').addEventListener('click', () => toggleProfile());
+
+      const KEYS = [
+        ['← →', 'previous / next scene'],
+        ['⇧ 0–9', 'scene 0–9'],
+        ['1–4', 'pen: light, solid, medium, eraser'],
+        ['+ −', 'pen size'],
+        ['v', 'scene (lights red, solids blue)'],
+        ['b', 'next map'],
+        ['r', 'base ray count: 2× / 1× (HRC\'s)'],
+        ['n', 'new shape'],
+        ['⌫', 'delete selected shape'],
+        ['c', 'clear drawing'],
+        ['s', 'screenshot'],
+        ['?', 'this help'],
+      ];
+      const help = $('help');
+      KEYS.forEach(([k, d]) => help.append(el('div', { className: 'row' }, el('span', {}, ...k.split(' ').map((x) => el('kbd', { textContent: x }))), el('span', { textContent: d }))));
+      const toggleHelp = (force) => {
+        help.classList.toggle('open', force);
+        $('help-btn').classList.toggle('on', help.classList.contains('open'));
+      };
+      $('help-btn').addEventListener('click', () => toggleHelp());
+
+      document.addEventListener('keydown', (e) => {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        const t = e.target;
+        if (t instanceof HTMLInputElement && t.type === 'range' && e.key.startsWith('Arrow')) return;
+        const d = e.code.match(/^Digit(\d)$/);
+        if (d) {
+          e.preventDefault();
+          if (e.shiftKey) {
+            switchScene(+d[1]);
+            changed();
+          } else if (!locked() && +d[1] >= 1 && +d[1] <= KINDS.length) (selectShape(null), setPen('kind', KINDS[+d[1] - 1][0]), refresh());
+          return;
+        }
+        let handled = true;
+        switch (e.key) {
+          case 'v': case 'V': display.scene = !display.scene; redraw = true; changed(); break;
+          case 'r': case 'R': config.baseRayCount = 3 - config.baseRayCount; changed(); touch(); break;
+          case 'b': case 'B': display.map = display.map === 'tone' ? 'banded' : 'tone'; redraw = true; changed(); break;
+          case '?': toggleHelp(); break;
+          case 'Escape': toggleHelp(false); selectShape(null); break;
+          case '=': case '+': stepPenSize(1); break;
+          case '-': case '_': stepPenSize(-1); break;
+          case 'c': case 'C': if (!locked()) ((strokes = []), touch()); break;
+          case 's': case 'S': screenshot(); break;
+          case 'ArrowRight': switchScene(sceneUI.current + 1); changed(); break;
+          case 'ArrowLeft': switchScene(sceneUI.current - 1); changed(); break;
+          case 'n': case 'N':
+            if (locked()) break;
+            shapes.push({ x: -30, y: -30, w: 60, h: 60, ...(pen.kind === 'eraser' ? { b: 0, rgb: grey(0) } : penMaterial()) });
+            selectShape(shapes.at(-1));
+            touch();
+            break;
+          case 'Delete':
+          case 'Backspace':
+            if (selected) {
+              shapes = shapes.filter((s) => s !== selected);
+              selectShape(null);
+              touch();
+            }
+            break;
+          default:
+            handled = false;
+        }
+        if (handled) {
+          e.preventDefault();
+          if (t !== document.body) t?.blur?.();
+        }
+      });
+
+      // drag a shape, or draw and erase strokes; the cursor previews the pen
+      const pointer = penPointer(view, {
+        span: SPAN,
+        N: () => config.N,
+        locked,
+        shapes: () => shapes,
+        rect: (s) => [s.x, s.y, s.w, s.h],
+        move: (s, x, y) => Object.assign(s, { x, y }),
+        select: selectShape,
+        eraser: () => pen.kind === 'eraser',
+        size: () => pen.size,
+        strokes: { get: () => strokes, set: (s) => (strokes = s), material: () => penMaterial() },
+        cursor: (p) => (cursor = p),
+        touch,
+      });
+
+      // debugging hooks (window.reciprocalHRC)
+      const capture = () => new Promise((res) => {
+        const encoder = device.createCommandEncoder(); encodeDraw(encoder, engine()); device.queue.submit([encoder.finish()]); res(view.toDataURL('image/png'));
+      });
+      // relative error against the exact reference over free pixels not next to a light; solves the scene itself, since a
+      // hidden page runs no frames
+      async function errorAgainstExact() {
+        const cascade = engine(), N = cascade.N;
+        rasterise(N);
+        cascade.upload({ emission, solid, absorption });
+        uploadReference();
+        reference.startExact(EXACT_DENSITY * N);
+        while (!reference.exactProgress?.done) await new Promise((resolve) => setTimeout(resolve, 100));
+        const read = async (buffer, bytes) => {
+          const staging = device.createBuffer({ size: bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+          const encoder = device.createCommandEncoder();
+          encoder.copyBufferToBuffer(buffer, 0, staging, 0, bytes);
+          device.queue.submit([encoder.finish()]);
+          await staging.mapAsync(GPUMapMode.READ);
+          const out = new Float32Array(staging.getMappedRange().slice(0));
+          staging.destroy();
+          return out;
+        };
+        const encoder = device.createCommandEncoder();
+        cascade.encodeAll(encoder);
+        device.queue.submit([encoder.finish()]);
+        const fluence = await read(cascade.outputBuffer, N * N * 16), exact = await read(reference.exactOutput, N * N * 4);
+        const isLight = (i) => emission[3 * i] + emission[3 * i + 1] + emission[3 * i + 2] > 0;
+        let sum = 0, largest = 0, count = 0, schemeSum = 0, exactSum = 0;
+        for (let x = 1; x < N - 1; x++)
+          for (let y = 1; y < N - 1; y++) {
+            const i = x * N + y, want = exact[i] * 2 * Math.PI;
+            if (solid[i] || want <= 1e-3) continue;
+            let nearLight = false;
+            for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) nearLight ||= isLight((x + dx) * N + y + dy);
+            if (nearLight) continue;
+            const error = Math.abs(fluence[4 * i + 3] - want) / want;
+            sum += error; largest = Math.max(largest, error); schemeSum += fluence[4 * i + 3]; exactSum += want; count++;
+          }
+        return { pixels: count, meanRelativeError: sum / count, largestRelativeError: largest, totalRatio: schemeSum / exactSum };
+      }
+      window.reciprocalHRC = { config, display, device, engine, touch, capture, profiler, setReference, switchScene, scenes, errorAgainstExact, reference: () => reference, stats: () => ({ frameMs }), scene: () => ({ shapes, strokes, emission, solid, absorption }) };
+
+      const initScene = loadURL();
+      urlReady = true;
+      if (new URLSearchParams(location.search).get('profile') === '1') toggleProfile(true);
+      syncPen();
+      refresh();
+      layout();
+      switchScene(initScene);
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>

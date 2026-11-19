@@ -1,0 +1,508 @@
+/* The scheme pages' shared styles: layout, panels, controls, legends, tools. Each page links this before its own
+   <style>, which keeps only what is its own. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+:root {
+  --bg: #0e0e0e;
+  --panel: #151515;
+  --line: rgba(255, 255, 255, 0.08);
+  --text: rgba(255, 255, 255, 0.82);
+  --dim: rgba(255, 255, 255, 0.45);
+  --faint: rgba(255, 255, 255, 0.28);
+  --ctl: rgba(255, 255, 255, 0.06);
+  --ctl-hover: rgba(255, 255, 255, 0.11);
+  --on: #d8d8d8;
+  --on-text: #111;
+  --accent: #7fc8a9;
+  --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+}
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+body {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr) 300px;
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.35 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+#canvas-area {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+}
+/* ── Panels ── */
+aside {
+  position: relative;
+  z-index: 10;
+  background: var(--panel);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+}
+#left {
+  border-right: 1px solid var(--line);
+}
+section {
+  padding: 12px 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+section > h2 {
+  margin: 0 0 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: var(--dim);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+section > h2 small {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--faint);
+  font-family: var(--mono);
+}
+.field {
+  margin-top: 10px;
+}
+.field:first-of-type {
+  margin-top: 0;
+}
+.field > .label {
+  font-size: 11px;
+  color: var(--dim);
+  margin-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+}
+.field > .label .val {
+  font-family: var(--mono);
+  color: var(--text);
+}
+.field.disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+kbd {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--faint);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0 3px;
+  line-height: 14px;
+}
+/* segmented pick-one */
+.seg {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 2px;
+  background: var(--ctl);
+  border-radius: 6px;
+  padding: 2px;
+}
+.seg.wrap {
+  grid-auto-flow: row;
+  grid-template-columns: repeat(var(--cols, 3), 1fr);
+}
+.seg button {
+  font: inherit;
+  font-size: 11px;
+  color: var(--dim);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  padding: 4px 2px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.seg button:hover {
+  color: var(--text);
+  background: var(--ctl-hover);
+}
+.seg button.on {
+  background: var(--on);
+  color: var(--on-text);
+}
+/* on/off toggle */
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  font: inherit;
+  color: var(--text);
+  background: none;
+  border: 0;
+  padding: 5px 0;
+  cursor: pointer;
+  text-align: left;
+}
+.toggle .sw {
+  flex: none;
+  width: 26px;
+  height: 14px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.14);
+  position: relative;
+  transition: background 0.12s;
+}
+.toggle .sw::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.7);
+  transition: transform 0.12s;
+}
+.toggle.on .sw {
+  background: var(--accent);
+}
+.toggle.on .sw::after {
+  transform: translateX(12px);
+  background: #fff;
+}
+.toggle .name {
+  flex: 1;
+}
+.toggle:hover .name {
+  color: #fff;
+}
+/* scene list */
+#scene-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px 2px;
+}
+#scene-list .group {
+  grid-column: 1 / -1;
+  font-size: 10px;
+  color: var(--faint);
+  margin: 7px 0 1px;
+}
+#scene-list .group:first-child {
+  margin-top: 0;
+}
+#scene-list button {
+  font: inherit;
+  text-align: left;
+  color: var(--dim);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  padding: 3px 4px;
+  cursor: pointer;
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+}
+#scene-list button .idx {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--faint);
+  width: 13px;
+  flex: none;
+  text-align: right;
+  line-height: 16px;
+}
+#scene-list button:hover {
+  background: var(--ctl);
+  color: var(--text);
+}
+#scene-list button.on {
+  background: var(--on);
+  color: var(--on-text);
+}
+#scene-list button.on .idx {
+  color: rgba(0, 0, 0, 0.5);
+}
+/* sliders */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 16px;
+  background: transparent;
+  outline: none;
+  cursor: pointer;
+  margin: 0;
+}
+input[type='range']::-webkit-slider-runnable-track {
+  height: 3px;
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 2px;
+}
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.75);
+  border: none;
+  margin-top: -4.5px;
+}
+input[type='range']::-moz-range-track {
+  height: 3px;
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 2px;
+}
+input[type='range']::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.75);
+  border: none;
+}
+.hint {
+  margin-top: 8px;
+  font-size: 10.5px;
+  color: var(--faint);
+}
+/* legend */
+#legend {
+  margin-top: 10px;
+}
+#legend .bar {
+  height: 10px;
+  border-radius: 2px;
+}
+#legend .ticks {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--faint);
+  margin-top: 2px;
+}
+#legend .caption {
+  font-size: 10.5px;
+  color: var(--faint);
+  margin-top: 4px;
+}
+/* status / tools */
+#tools {
+  margin-top: auto;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+#tools button {
+  font: inherit;
+  font-size: 11px;
+  color: var(--dim);
+  background: var(--ctl);
+  border: 0;
+  border-radius: 4px;
+  padding: 3px 7px;
+  cursor: pointer;
+}
+#tools button:hover {
+  color: var(--text);
+  background: var(--ctl-hover);
+}
+#tools button.on {
+  background: var(--on);
+  color: var(--on-text);
+}
+/* help + perf overlays (inside the canvas area) */
+#help {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 20;
+  background: rgba(12, 12, 12, 0.94);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: none;
+  min-width: 230px;
+  font-size: 11px;
+  line-height: 1.75;
+}
+#help.open {
+  display: block;
+}
+#help .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+#help .row span:last-child {
+  color: var(--dim);
+}
+/* the output panel: the map and the scene overlay on one row */
+.map-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 14px;
+  align-items: end;
+  margin-top: 10px;
+}
+.map-row .field {
+  margin-top: 0;
+}
+/* an on/off pill: a segmented control of one button */
+.seg.pill button {
+  padding: 4px 12px;
+}
+/* the scene lock's colour: the outline around the locked square and the selected reference */
+:root {
+  --lock: #d4665a;
+}
+.reference .seg button.on {
+  background: var(--lock);
+  color: #fff;
+}
+/* the error legend's bar: drag to mark errors above a size in magenta */
+#legend .bar.error {
+  position: relative;
+  cursor: ew-resize;
+  touch-action: none;
+}
+#legend .bar.error i {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--text);
+  border-radius: 1px;
+}
+
+/* ── The explainer: prose, figures and their captions ── */
+#explainer {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  user-select: text;
+}
+#right > section:not(#explainer) {
+  flex: none;
+}
+#explainer p,
+#explainer .hint,
+#explainer figcaption {
+  color: rgba(255, 255, 255, 0.7);
+}
+#explainer p {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+figure {
+  margin: 10px 0 12px;
+}
+figure svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+math {
+  font-family: 'STIX Two Math', 'Latin Modern Math', 'Cambria Math', math;
+  font-size: 1.12em;
+}
+/* a figure's key: one line per mark, its swatch in the figure's colour (diagram.ts legendKey) */
+.key {
+  list-style: none;
+  margin: 2px 0 6px;
+  padding: 0;
+  color: rgba(255, 255, 255, 0.85);
+}
+.key li {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 6px;
+  align-items: baseline;
+  line-height: 1.45;
+}
+.key i {
+  justify-self: center;
+  font-style: normal;
+  font-weight: 600;
+  color: var(--c);
+}
+.key i.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--c);
+  align-self: start;
+  margin-top: 0.45em;   /* on the first line's middle */
+}
+.key i.mark {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--c);
+  align-self: start;
+  margin-top: 0.6em;
+}
+/* a formula's symbols: a compact legend, one symbol per line */
+.symbols {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0 8px;
+  margin: 2px 0 6px;
+  color: rgba(255, 255, 255, 0.85);
+  line-height: 1.45;
+}
+.symbols dt,
+.symbols dd {
+  margin: 0;
+}
+/* a formula under its panel, on the grid's left edge (diagram.ts: 15 of 274 units in) */
+.panel-formula {
+  width: 274px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding-left: 5.47%;
+  margin: 2px auto 10px;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+}
+/* formulas under the panels of a two-panel diagram: the columns match diagram.ts's halves layout (panels of
+   128 of 274 units, 14 apart, 2 in from each side), in % so they follow the SVG when it scales down */
+.panel-captions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 5.11%;
+  width: 274px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 0 0.73%;
+  margin: 4px auto 0;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+}
+.panel-captions math[display='block'] {
+  margin: 0 0 2px;
+}
+figure figcaption {
+  font-size: 11px;
+  color: var(--faint);
+  margin-top: 3px;
+}

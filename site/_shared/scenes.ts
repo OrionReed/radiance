@@ -85,10 +85,10 @@ scene('media', 'Absorbers', [[-260, -20, 30, 40, WHITE], ...[0.02, 0.05, 0.1, 0.
 scene('empty', 'Empty', []);
 
 // ── tests ──
-// A small standard set, one case of an error class each, from single cases to combinations: a light alone, a light and one
-// occluder edge, an aperture, corner-touching and scattered occluders, media, then the hard cases together. Tests are drawn
-// in pixels at 128² (Occlusion stress at 512²), rows counted down from the top. Lights sit off the centre and off the axes,
-// so errors that are symmetric about them do not cancel.
+// One case per kind of error, from single cases to combinations: a light alone, a light and one occluder edge, an
+// aperture, corner-touching and scattered occluders, volumetrics, then the hard cases together. Tests are drawn in pixels
+// at 128² (Stress test at 512²), rows counted down from the top. Lights sit off the centre and off the axes, so mirror-image
+// errors do not cancel.
 // pixels [x0, x1) × [y0, y1) at resolution N
 const pixels = (N: number) => (x0: number, x1: number, y0: number, y1: number, brightness = 0, opacity = 1): Row => {
   const u = SPAN / N;
@@ -131,7 +131,7 @@ scene('tests', 'Clutter', (() => {
   for (let x = 36; x < 128; x++) for (let y = 0; y < 128; y++) if (r() < 0.04) list.push(px(x, x + 1, y, y + 1));
   return list;
 })(), 128);
-// media: an absorbing block lets about a quarter through; a thin glowing block, and a dense one that is nearly a solid light
+// volumetrics: an absorbing block lets about a quarter through; a thin glowing block, and a dense one that is nearly a solid light
 scene('tests', 'Fog shadow', [light(28, 62, 4), px(52, 64, 50, 80, 0, across(0.89))], 128);
 scene('tests', 'Thin glow', [px(52, 76, 52, 76, 1, across(0.95))], 128);
 scene('tests', 'Dense glow', [px(52, 76, 52, 76, 1, across(0.55))], 128);
@@ -151,6 +151,38 @@ scene('tests', 'Stress test', [
   [-120, 250, 60, 60], [-60, 270, 8, 20, BLUE],
   [0, -480, 200, 2, PURPLE],
 ], 512);
+
+// media worlds: the Reciprocal HRC volumetrics study's scenes. Absorption σ per pixel of path length at 128², as opacity per
+// reference cell; drawn pixel by pixel, rows from the top
+const medium = (sigma: number) => across(Math.exp(-sigma));
+const inDisc = (cx: number, cy: number, r: number, f: (x: number, row: number, d: number) => Row | null) => {
+  const list: Row[] = [];
+  for (let x = 0; x < 128; x++)
+    for (let y = 0; y < 128; y++) {
+      const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy) / r;   // (cx, cy) with y up, as in the study
+      const row = d < 1 ? f(x, 127 - y, d) : null;
+      if (row) list.push(row);
+    }
+  return list;
+};
+const studyLight = (x: number, y: number) => px(x, x + 2, 126 - y, 128 - y, 1);   // 2 × 2 at (x, y), y up
+// thin fog everywhere, a wall, a light
+scene('media worlds', 'Fog', [px(0, 128, 0, 128, 0, medium(0.015)), px(72, 74, 44, 84), studyLight(39, 63)], 128);
+// a light behind a straight veil and a 45° one, each of optical depth ½ across
+scene('media worlds', 'Veil', [
+  studyLight(31, 63),
+  px(46, 48, 32, 96, 0, medium(Math.log(2) / 2)),
+  ...inDisc(64, 64, 1e9, (x, row) => {
+    const u = x + 0.5, v = 127.5 - row;
+    return Math.abs(u - v - 24) / Math.SQRT2 < 1 && v > 40 && v < 100 ? px(x, x + 1, row, row + 1, 0, medium(Math.log(2) / 2)) : null;
+  }),
+], 128);
+// a soft occluder: a disc whose density falls from 3 per pixel at its centre to 0 at its edge
+scene('media worlds', 'Soft occluder', [...inDisc(80, 64, 16, (x, row, d) => px(x, x + 1, row, row + 1, 0, medium(3 * (1 - d) ** 2))), studyLight(43, 63)], 128);
+// a glowing medium beside a wall
+scene('media worlds', 'Gas', [...inDisc(60, 64, 12, (x, row) => px(x, x + 1, row, row + 1, 1, medium(0.3))), px(82, 84, 40, 88)], 128);
+// a light inside a disc of fog
+scene('media worlds', 'Light in fog', [...inDisc(64, 64, 24, (x, row) => px(x, x + 1, row, row + 1, 0, medium(0.12))), studyLight(63, 63)], 128);
 
 // the scenes a scheme can draw: one that models only solids drops every scene with a volume
 export const scenesFor = ({ volumes }: { volumes: boolean }) => scenes.filter((s) => volumes || s.shapes.every((sh) => sh.opacity >= 1));

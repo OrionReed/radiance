@@ -6,403 +6,27 @@
     <title>Digital HRC</title>
     <meta name="description" content="HRC with exact falloff, b-type rays, l-system lines, etc." />
     <meta name="order" content="2" />
+    <link rel="stylesheet" href="../_shared/page.css" />
     <style>
-      *,
-      *::before,
-      *::after {
-        box-sizing: border-box;
-      }
-      :root {
-        --bg: #0e0e0e;
-        --panel: #151515;
-        --line: rgba(255, 255, 255, 0.08);
-        --text: rgba(255, 255, 255, 0.82);
-        --dim: rgba(255, 255, 255, 0.45);
-        --faint: rgba(255, 255, 255, 0.28);
-        --ctl: rgba(255, 255, 255, 0.06);
-        --ctl-hover: rgba(255, 255, 255, 0.11);
-        --on: #d8d8d8;
-        --on-text: #111;
-        --accent: #7fc8a9;
-        --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
-      }
-      html,
-      body {
-        height: 100%;
-        margin: 0;
-        overflow: hidden;
-      }
-      body {
-        display: grid;
-        grid-template-columns: 236px minmax(0, 1fr) 252px;
-        background: var(--bg);
-        color: var(--text);
-        font: 12px/1.35 system-ui, -apple-system, 'Segoe UI', sans-serif;
-      }
-      #canvas-area {
-        position: relative;
-        min-width: 0;
-        overflow: hidden;
-      }
-
-      /* ── Panels ── */
-      aside {
-        position: relative;
-        z-index: 10;
-        background: var(--panel);
-        overflow-y: auto;
-        scrollbar-width: thin;
-        user-select: none;
-        display: flex;
-        flex-direction: column;
-      }
-      #left {
-        border-right: 1px solid var(--line);
-      }
+      /* panels */
       #right {
         border-left: 1px solid var(--line);
       }
-      section {
-        padding: 12px 12px 14px;
-        border-bottom: 1px solid var(--line);
-      }
-      section > h2 {
-        margin: 0 0 10px;
-        font-size: 10px;
-        font-weight: 600;
-        letter-spacing: 1.4px;
-        text-transform: uppercase;
-        color: var(--dim);
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-      }
-      section > h2 small {
-        font-weight: 400;
-        letter-spacing: 0;
-        text-transform: none;
-        color: var(--faint);
-        font-family: var(--mono);
-      }
-      .field {
-        margin-top: 10px;
-      }
-      .field:first-of-type {
-        margin-top: 0;
-      }
-      .field > .label {
-        font-size: 11px;
-        color: var(--dim);
-        margin-bottom: 4px;
-        display: flex;
-        justify-content: space-between;
-      }
-      .field > .label .val {
-        font-family: var(--mono);
-        color: var(--text);
-      }
-      .field.disabled {
-        opacity: 0.35;
-        pointer-events: none;
-      }
-      kbd {
-        font-family: var(--mono);
-        font-size: 10px;
-        color: var(--faint);
-        border: 1px solid var(--line);
-        border-radius: 3px;
-        padding: 0 3px;
-        line-height: 14px;
-      }
-
-      /* segmented pick-one */
-      .seg {
-        display: grid;
-        grid-auto-flow: column;
-        grid-auto-columns: 1fr;
-        gap: 2px;
-        background: var(--ctl);
-        border-radius: 6px;
-        padding: 2px;
-      }
-      .seg.wrap {
-        grid-auto-flow: row;
-        grid-template-columns: repeat(var(--cols, 3), 1fr);
-      }
-      .seg button {
-        font: inherit;
-        font-size: 11px;
-        color: var(--dim);
-        background: none;
-        border: 0;
-        border-radius: 4px;
-        padding: 4px 2px;
-        cursor: pointer;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .seg button:hover {
-        color: var(--text);
-        background: var(--ctl-hover);
-      }
-      .seg button.on {
-        background: var(--on);
-        color: var(--on-text);
-      }
-
-      /* on/off toggle */
-      .toggle {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        width: 100%;
-        font: inherit;
-        color: var(--text);
-        background: none;
-        border: 0;
-        padding: 5px 0;
-        cursor: pointer;
-        text-align: left;
-      }
-      .toggle .sw {
-        flex: none;
-        width: 26px;
-        height: 14px;
-        border-radius: 7px;
-        background: rgba(255, 255, 255, 0.14);
-        position: relative;
-        transition: background 0.12s;
-      }
-      .toggle .sw::after {
-        content: '';
-        position: absolute;
-        top: 2px;
-        left: 2px;
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        background: rgba(255, 255, 255, 0.7);
-        transition: transform 0.12s;
-      }
-      .toggle.on .sw {
-        background: var(--accent);
-      }
-      .toggle.on .sw::after {
-        transform: translateX(12px);
-        background: #fff;
-      }
-      .toggle .name {
-        flex: 1;
-      }
-      .toggle:hover .name {
-        color: #fff;
-      }
-
-      /* scene list */
-      #scene-list {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 1px 2px;
-      }
-      #scene-list .group {
-        grid-column: 1 / -1;
-        font-size: 10px;
-        color: var(--faint);
-        margin: 7px 0 1px;
-      }
-      #scene-list .group:first-child {
-        margin-top: 0;
-      }
-      #scene-list button {
-        font: inherit;
-        text-align: left;
-        color: var(--dim);
-        background: none;
-        border: 0;
-        border-radius: 4px;
-        padding: 3px 4px;
-        cursor: pointer;
-        display: flex;
-        gap: 4px;
-        min-width: 0;
-        white-space: nowrap;
-        overflow: hidden;
-      }
-      #scene-list button .idx {
-        font-family: var(--mono);
-        font-size: 10px;
-        color: var(--faint);
-        width: 13px;
-        flex: none;
-        text-align: right;
-        line-height: 16px;
-      }
-      #scene-list button:hover {
-        background: var(--ctl);
-        color: var(--text);
-      }
-      #scene-list button.on {
-        background: var(--on);
-        color: var(--on-text);
-      }
-      #scene-list button.on .idx {
-        color: rgba(0, 0, 0, 0.5);
-      }
-
-      /* sliders */
-      input[type='range'] {
-        -webkit-appearance: none;
-        appearance: none;
-        width: 100%;
-        height: 16px;
-        background: transparent;
-        outline: none;
-        cursor: pointer;
-        margin: 0;
-      }
-      input[type='range']::-webkit-slider-runnable-track {
-        height: 3px;
-        background: rgba(255, 255, 255, 0.14);
-        border-radius: 2px;
-      }
-      input[type='range']::-webkit-slider-thumb {
-        -webkit-appearance: none;
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        background: rgba(255, 255, 255, 0.75);
-        border: none;
-        margin-top: -4.5px;
-      }
-      input[type='range']::-moz-range-track {
-        height: 3px;
-        background: rgba(255, 255, 255, 0.14);
-        border-radius: 2px;
-      }
-      input[type='range']::-moz-range-thumb {
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        background: rgba(255, 255, 255, 0.75);
-        border: none;
-      }
-
-      .hint {
-        margin-top: 8px;
-        font-size: 10.5px;
-        color: var(--faint);
-      }
-
-      /* legend */
-      #legend {
-        margin-top: 10px;
-      }
-      #legend .bar {
-        height: 10px;
-        border-radius: 2px;
-      }
-      #legend .ticks {
-        display: flex;
-        justify-content: space-between;
-        font-family: var(--mono);
-        font-size: 9px;
-        color: var(--faint);
-        margin-top: 2px;
-      }
-      #legend .caption {
-        font-size: 10.5px;
-        color: var(--faint);
-        margin-top: 4px;
-      }
-
       /* status / tools */
-      #tools {
-        margin-top: auto;
-        padding: 8px 12px;
-        border-top: 1px solid var(--line);
-        border-bottom: 0;
-        display: flex;
-        align-items: center;
-        gap: 4px;
-      }
-      #tools button {
-        font: inherit;
-        font-size: 11px;
-        color: var(--dim);
-        background: var(--ctl);
-        border: 0;
-        border-radius: 4px;
-        padding: 3px 7px;
-        cursor: pointer;
-      }
-      #tools button:hover {
-        color: var(--text);
-        background: var(--ctl-hover);
-      }
-      #tools button.on {
-        background: var(--on);
-        color: var(--on-text);
-      }
       #fps {
         font-family: var(--mono);
         font-size: 11px;
         color: var(--dim);
         margin-right: auto;
+        cursor: pointer;
       }
-
-
-      /* help + perf overlays (inside the canvas area) */
-      #help {
-        position: absolute;
-        right: 12px;
-        bottom: 12px;
-        z-index: 20;
-        background: rgba(12, 12, 12, 0.94);
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        padding: 10px 12px;
-        display: none;
-        min-width: 230px;
-        font-size: 11px;
-        line-height: 1.75;
-      }
-      #help.open {
-        display: block;
-      }
-      #help .row {
-        display: flex;
-        justify-content: space-between;
-        gap: 16px;
-      }
-      #help .row span:last-child {
-        color: var(--dim);
-      }
-      #perf-graph {
+      /* the GPU profile */
+      .gpu-profiler {
         position: absolute;
         top: 8px;
         left: 8px;
         z-index: 20;
-        background: rgba(0, 0, 0, 0.8);
-        border-radius: 6px;
-        display: none;
-        flex-direction: column;
-        font-family: var(--mono);
-        font-size: 9px;
-        color: rgba(255, 255, 255, 0.5);
-        pointer-events: none;
-        overflow: hidden;
       }
-      #perf-graph.open {
-        display: flex;
-      }
-      #perf-graph .perf-stats {
-        display: flex;
-        gap: 12px;
-        padding: 6px 8px 4px;
-        font-size: 10px;
-      }
-
       /* the cascade's square (one canvas pixel per cell, scaled with nearest-neighbour sampling) */
       #view {
         position: absolute;
@@ -416,14 +40,6 @@
       #view.grabbing {
         cursor: grabbing;
       }
-      /* the scene lock's colour: the outline around the locked square and the selected reference */
-      :root {
-        --lock: #d4665a;
-      }
-      .reference .seg button.on {
-        background: var(--lock);
-        color: #fff;
-      }
       /* two toggles side by side */
       .pair {
         display: grid;
@@ -433,21 +49,6 @@
       }
       .pair .field {
         margin-top: 0;
-      }
-      /* the error legend's bar: drag to mark errors above a size in magenta */
-      #legend .bar.error {
-        position: relative;
-        cursor: ew-resize;
-        touch-action: none;
-      }
-      #legend .bar.error i {
-        position: absolute;
-        top: -2px;
-        bottom: -2px;
-        width: 2px;
-        margin-left: -1px;
-        background: var(--text);
-        border-radius: 1px;
       }
       /* the scene locks while a reference is shown: no drawing or editing, and an outline around the square */
       body.locked #pen {
@@ -490,24 +91,15 @@
         <div id="scene-params"></div>
       </section>
       <section id="pen">
-        <h2><span id="pen-title">pen</span> <small id="pen-sub">draw on the canvas</small></h2>
+        <h2><span id="pen-title">pen</span> <small id="pen-sub"></small></h2>
         <div id="pen-fields"></div>
         <div id="size-field"></div>
-        <div class="hint">light = solid and glowing · solid = dark · volume = partly see-through · each sets brightness and opacity, which can then be changed · drag a shape to move it · the cursor previews the pen</div>
       </section>
     </aside>
 
     <div id="canvas-area">
       <canvas id="view"></canvas>
       <div id="selection"></div>
-      <div id="perf-graph">
-        <div class="perf-stats">
-          <span id="perf-fps" style="color: rgba(255, 255, 255, 0.7)"></span>
-          <span id="perf-cpu-val" style="color: rgba(100, 200, 255, 0.9)"></span>
-          <span id="perf-gpu-val" style="color: rgba(255, 150, 80, 0.9)"></span>
-        </div>
-        <canvas id="perf-canvas"></canvas>
-      </div>
       <div id="help"></div>
       <div id="error"></div>
     </div>
@@ -523,108 +115,44 @@
         <div id="legend"></div>
       </section>
       <section id="tools">
-        <span id="fps" title="cascade frame: scene upload + four quadrants + draw, submit to done (recomputed only when the scene changes); click for the perf graph" style="cursor: pointer"></span>
-        <button id="bench-btn" title="time this N in this browser: cascade passes alone, a full frame, the draw alone (console has the table)">bench</button>
+        <span id="fps" title="Wall time of one solve and draw, averaged over edits. Click for the GPU profile." style="cursor: pointer"></span>
+        <button id="bench-btn" title="Time the passes, a full frame and the draw at this N (table in the console)">bench</button>
         <button id="shot-btn" title="screenshot (s)">shot</button>
         <button id="help-btn" title="keyboard shortcuts (?)">?</button>
       </section>
     </aside>
 
     <script type="module">
-      // Digital HRC: interactive page. Scenes are plain data (rectangles in scene units), rasterised on the CPU into emission E
-      // and transmittance A.
+      // Digital HRC page. Scenes are rectangles in scene units, rasterised on the CPU into emission E and transmittance A.
       import { DigitalHRC } from './digital-hrc.js';
       import { scenesFor, SPAN } from '../_shared/scenes';
       import { Reference } from '../_shared/reference';
+      import { Profiler } from '../_shared/profiler';
+      import { DISPLAY_WGSL, EXPOSURE, EXPOSURE_CONTROL, BANDED_LEGEND, MAP_CONTROL, MAP_INDEX } from '../_shared/display';
+      import { $, el, createControls, fieldFor, writeControls, readControls, sceneFromURL, replaceURL } from '../_shared/ui';
+      import { DRAW_WGSL } from '../_shared/draw';
+      import { outputPanel, EXACT_DENSITY } from '../_shared/output-panel';
+      import { sceneList, penPointer, PEN_SIZES, nextPenSize } from '../_shared/scene-panel';
 
-      const $ = (id) => document.getElementById(id);
-      const el = (tag, props = {}, ...children) => {
-        const e = Object.assign(document.createElement(tag), props);
-        e.append(...children);
-        return e;
-      };
       const view = $('view');
 
-      // ════════════════════════════════════════════════════════════════════
       // State. cfg rebuilds the cascade when it changes; out only redraws.
-      // ════════════════════════════════════════════════════════════════════
-      const cfg = { N: 256, splitRule: 'balanced', solidLights: true };
-      const out = { map: 'srgb', exposure: 1, dither: true, scene: false };
+      const cfg = { N: 256, splitRule: 'balanced' };
+      const out = { scene: false, map: 'tone', stops: 0 };
       // reference view: 0 none (the scheme itself), 1 path trace, 2 exact, 3 error against the path trace, 4 against exact.
       // The scene locks while one is shown.
-      let refMode = 0, refDensity = 64, reference = null, drawnVersion = -1, errorClip = 0;   // errorClip: exponent, 0 off
+      let refMode = 0, reference = null, drawnVersion = -1;
       const locked = () => refMode !== 0;
       const pathTracing = () => refMode === 1 || refMode === 3;
 
       let dirty = true, redraw = true;
       const touch = () => (dirty = true);
 
-      // ════════════════════════════════════════════════════════════════════
-      // Controls: a toggle is an independent on/off; a segmented control picks one of several.
-      // Each spec: { label, get(), set(v), enabled?(), key?, title?, url?: [name, default] }.
-      // ════════════════════════════════════════════════════════════════════
-      const controls = [];
-      const field = (obj, name, after = touch) => ({ get: () => obj[name], set: (v) => ((obj[name] = v), after()) });
-
-      function toggle(parent, spec) {
-        const sw = el('span', { className: 'sw' });
-        const b = el('button', { className: 'toggle', title: spec.title ?? '' }, sw, el('span', { className: 'name', textContent: spec.label }));
-        if (spec.key) b.append(el('kbd', { textContent: spec.key }));
-        b.addEventListener('click', () => {
-          spec.set(!spec.get());
-          changed();
-        });
-        const wrap = el('div', { className: 'field' }, b);
-        parent.append(wrap);
-        controls.push({ spec, sync: () => b.classList.toggle('on', !!spec.get()), wrap });
-      }
-
-      function segmented(parent, spec) {
-        const seg = el('div', { className: 'seg' + (spec.cols ? ' wrap' : '') });
-        if (spec.cols) seg.style.setProperty('--cols', spec.cols);
-        const buttons = spec.options.map(([value, text, title]) => {
-          const b = el('button', { textContent: text, title: title ?? text });
-          b.addEventListener('click', () => {
-            spec.set(value);
-            changed();
-          });
-          seg.append(b);
-          return [value, b];
-        });
-        let wrap = seg;
-        if (spec.label) {
-          const label = el('div', { className: 'label' }, el('span', { textContent: spec.label }));
-          if (spec.key) label.append(el('kbd', { textContent: spec.key }));
-          wrap = el('div', { className: 'field', title: spec.title ?? '' }, label, seg);
-        }
-        parent.append(wrap);
-        controls.push({ spec, sync: () => buttons.forEach(([v, b]) => b.classList.toggle('on', v === spec.get())), wrap });
-      }
-
-      function slider(parent, spec) {
-        const val = el('span', { className: 'val' });
-        const input = el('input', { type: 'range', min: spec.min, max: spec.max, step: spec.step });
-        input.addEventListener('input', () => {
-          spec.set(Number(input.value));
-          changed();
-        });
-        const wrap = el('div', { className: 'field', title: spec.title ?? '' }, el('div', { className: 'label' }, el('span', { textContent: spec.label }), val), input);
-        parent.append(wrap);
-        controls.push({
-          spec,
-          sync: () => {
-            input.value = spec.get();
-            val.textContent = spec.format ? spec.format(spec.get()) : spec.get();
-          },
-          wrap,
-        });
-      }
-
+      // Controls. Each spec: { label, get(), set(v), enabled?(), key?, title?, url?: [name, default] }.
+      const { controls, toggle, segmented, slider, pill, syncControls } = createControls(() => changed());
+      const field = fieldFor(() => touch());
       function refresh() {
-        for (const c of controls) {
-          c.sync();
-          if (c.spec.enabled) c.wrap.classList.toggle('disabled', !c.spec.enabled());
-        }
+        syncControls();
         renderLegend();
       }
       function changed() {
@@ -632,13 +160,8 @@
         syncURL();
       }
 
-      // ════════════════════════════════════════════════════════════════════
-      // Materials, in the square-pixel (px-box) model. Mono: a colour's luminance S is the material's radiance (its source
-      // function). Opacity is per reference cell (N = 256), so a scene looks the same at every N: extinction per cell
-      // σ = −ln(1 − opacity) · 256/N, A = e^−σ, emission density E = S σ, so a thick block glows with radiance S.
-      // Opacity 1 is solid (A = 0): dark, or a light of radiance S on its faces. Opacity 0 is see-through: E = S per reference
-      // cell length.
-      // ════════════════════════════════════════════════════════════════════
+      // Materials (mono): luminance S is the radiance. Opacity is per cell at N = 256, so a scene looks the same at every N:
+      // sigma = -ln(1 - opacity) 256 / N, A = e^-sigma, E = S sigma. Opacity 1 is solid (A = 0), with light S on its faces.
       const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
       const REF = 256;
       const material = (rgb, opacity, N) => {
@@ -649,49 +172,28 @@
         return { e: S * sig, a: Math.exp(-sig) };
       };
 
-      // ════════════════════════════════════════════════════════════════════
       // Scenes: the shared set (site/_shared/scenes.ts). A shape here is { x, y, w, h, rgb, opacity } in scene units
       // (top-left, y down; rgb grey, its luminance the brightness). Tests impose their resolution while they are shown.
-      // ════════════════════════════════════════════════════════════════════
       let shapes = [], strokes = [];
       const scenes = scenesFor({ volumes: true });
 
-      // ── Scene switching ──
-      let currentScene = 0, freeN = null;   // freeN: the resolution to go back to after a test
-      const sceneButtons = [];
-      function switchScene(index) {
-        currentScene = (index + scenes.length) % scenes.length;
-        document.activeElement?.blur();
-        const s = scenes[currentScene];
-        if (s.N) ((freeN ??= cfg.N), (cfg.N = s.N));
-        else if (freeN) ((cfg.N = freeN), (freeN = null));
-        shapes = s.shapes.map(({ x, y, w, h, brightness: b, opacity }) => ({ x, y, w, h, rgb: [b, b, b], opacity }));
-        strokes = [];
-        selectShape(null);
-        sceneButtons.forEach((b, i) => b.classList.toggle('on', i === currentScene));
-        $('scene-id').textContent = scenes[currentScene].id;
-        touch();
-        syncURL();
-      }
-      {
-        const list = $('scene-list');
-        let group = null;
-        scenes.forEach((s, i) => {
-          if (s.group !== group) list.append(el('div', { className: 'group', textContent: (group = s.group) }));
-          const b = el('button', { title: s.id }, el('span', { className: 'idx', textContent: i }), el('span', { textContent: s.name }));
-          b.addEventListener('click', () => {
-            switchScene(i);
-            changed();
-          });
-          list.append(b);
-          sceneButtons.push(b);
-        });
-      }
+      // scene switching (site/_shared/scene-panel.ts)
+      const sceneUI = sceneList({
+        list: $('scene-list'),
+        label: $('scene-id'),
+        scenes,
+        resolution: { get: () => cfg.N, set: (n) => (cfg.N = n) },
+        load: (s) => {
+          shapes = s.shapes.map(({ x, y, w, h, brightness: b, opacity }) => ({ x, y, w, h, rgb: [b, b, b], opacity }));
+          strokes = [];
+          selectShape(null);
+        },
+        after: () => (touch(), syncURL()),
+        changed: () => changed(),
+      });
+      const switchScene = sceneUI.switchTo;
 
-      // ════════════════════════════════════════════════════════════════════
-      // Rasterisation: scene units → cells. Cell (gx, gy) with gy down is index gx·N + (N − 1 − gy) (y up).
-      // A rectangle covers the cells whose centres it contains, at least one; strokes stamp size × size squares.
-      // ════════════════════════════════════════════════════════════════════
+      // Rasterisation: cell (gx, gy), gy down, is index gx N + (N - 1 - gy) (y up).
       let E = null, A = null, cursor = null;
       const raster = { snap: false };
       function rasterise(N) {
@@ -704,9 +206,8 @@
           const i = cellIndex(gx, gy);
           if (i >= 0) ((E[i] = m.e), (A[i] = m.a));
         };
-        // unsnapped: the material covers a fraction c of the cell. Emission mixes by area and media by optical depth.
-        // Solid material (walls, lights) takes the whole cell when it covers the centre, else nothing: averaging
-        // its transmittance would let light through a thin wall (two half-covered cells pass 25 %, the wall passes 0).
+        // unsnapped: the material covers a fraction c of the cell; emission mixes by area, volumes by optical depth. Solids
+        // take the whole cell when they cover its centre, else nothing, so a thin wall never lets light through.
         const OPAQUE = 0.01;
         const over = (i, m, c, centre) => {
           if (m.a < OPAQUE) return centre ? ((E[i] = m.e), (A[i] = m.a)) : undefined;
@@ -755,21 +256,18 @@
           for (let x = Math.round(x0); x < Math.round(x1); x++) for (let y = Math.round(y0); y < Math.round(y1); y++) put(x, y, m);
         }
         for (const s of strokes) sweep(g(s.x0), g(s.y0), g(s.x1), g(s.y1), s.size * k, material(s.rgb, s.opacity, N));
-        if (cursor && pen.kind !== 'eraser' && !drag) {
+        if (cursor && pen.kind !== 'eraser' && !pointer.dragging()) {
           const m = penMaterial(), cx = g(cursor[0]), cy = g(cursor[1]);
           sweep(cx, cy, cx, cy, pen.size, material(m.rgb, m.opacity, N));
         }
       }
 
-      // ════════════════════════════════════════════════════════════════════
-      // Pen / shape inspector
-      // ════════════════════════════════════════════════════════════════════
-      // A pen is a material, brightness (radiance) and opacity; light, solid and volume only set defaults for both.
+      // Pen and shape inspector. A material is a brightness (radiance) and an opacity; the kinds only set defaults.
       // Shapes and strokes store { rgb, opacity } (mono: rgb grey).
       const KINDS = [
         ['light', 'light', 'solid and glowing'],
         ['solid', 'solid', 'solid and dark'],
-        ['volume', 'volume', 'partly see-through; glows if it has brightness'],
+        ['volume', 'medium', 'see-through: absorbs, and glows if bright'],
         ['eraser', 'eraser', 'erase strokes'],
       ];
       const KIND_DEFAULTS = { light: { brightness: 0.8, opacity: 1 }, solid: { brightness: 0, opacity: 1 }, volume: { brightness: 0, opacity: 0.1 } };
@@ -779,9 +277,8 @@
       const materialOf = ({ brightness: b, opacity }) => ({ rgb: [b, b, b], opacity });
       const penMaterial = () => materialOf(pen);
       const shapeState = (s) => ({ kind: kindOf(s), brightness: lum(s.rgb), opacity: s.opacity });
-      const PEN_SIZES = [1, 2, 4, 8, 16, 32]; // cells of the N × N grid
       const setPenSize = (v) => ((pen.size = v), touch(), refresh());
-      const stepPenSize = (d) => setPenSize(PEN_SIZES[Math.max(0, Math.min(PEN_SIZES.length - 1, PEN_SIZES.indexOf(pen.size) + d))] ?? 2);
+      const stepPenSize = (d) => setPenSize(nextPenSize(pen.size, d));
       const setPen = (key, v) => {
         if (selected && v === 'eraser') return;
         const st = selected ? shapeState(selected) : pen;
@@ -795,14 +292,14 @@
       segmented($('pen-fields'), { cols: 3, options: KINDS, get: () => penGet('kind'), set: (k) => setPen('kind', k) });
       slider($('pen-fields'), {
         label: 'brightness',
-        title: 'radiance (mono): a light\'s faces, or what a thick volume glows with',
+        title: 'radiance of a light\'s faces, or of a thick volume',
         min: 0, max: 2, step: 0.01,
         get: () => penGet('brightness'), set: (v) => setPen('brightness', v), format: (v) => v.toFixed(2),
         enabled: () => penGet('kind') !== 'eraser',
       });
       slider($('pen-fields'), {
         label: 'opacity',
-        title: 'per reference pixel (1/256 of the square across): 0 see-through, 1 solid',
+        title: 'per pixel at N = 256: 0 see-through, 1 solid',
         min: 0, max: 1, step: 0.01,
         get: () => Math.cbrt(penGet('opacity')), set: (v) => setPen('opacity', v ** 3),
         format: (v) => { const o = v ** 3; return o > 0 && o < 0.1 ? o.toFixed(3) : o.toFixed(2); },
@@ -810,7 +307,7 @@
       });
       function syncPen() {
         $('pen-title').textContent = selected ? 'shape' : 'pen';
-        $('pen-sub').textContent = selected ? 'selected · ⌫ deletes · esc' : 'draw on the canvas';
+        $('pen-sub').textContent = selected ? 'selected · ⌫ deletes · esc' : '';
         $('size-field').style.display = selected ? 'none' : '';
         refresh();
       }
@@ -819,179 +316,59 @@
         syncPen();
       }
 
-      // ════════════════════════════════════════════════════════════════════
       // Panels
-      // ════════════════════════════════════════════════════════════════════
       const PROBES = [64, 128, 256, 512, 1024];
-      segmented($('scene-params'), { label: 'resolution (N × N pixels)', title: 'tests set their own', options: PROBES.map((n) => [n, String(n)]), ...field(cfg, 'N'), enabled: () => !scenes[currentScene].N, url: ['N', 256] });
+      segmented($('scene-params'), { label: 'resolution', title: 'tests set their own', options: PROBES.map((n) => [n, String(n)]), ...field(cfg, 'N'), enabled: () => !scenes[sceneUI.current].N, url: ['N', 256] });
       toggle($('scene-params'), {
         label: 'snap to grid',
-        title: 'shapes and strokes take whole pixels, so they snap as they move; off, volumes cover pixels by area and move smoothly (solids always take whole pixels, by their centres)',
+        title: 'shapes take whole pixels; off, volumes cover pixels by area',
         ...field(raster, 'snap'),
         url: ['snap', false],
       });
-      segmented($('size-field'), { label: 'size (pixels)', options: PEN_SIZES.map((n) => [n, String(n)]), get: () => pen.size, set: setPenSize });
+      segmented($('size-field'), { label: 'size', options: PEN_SIZES.map((n) => [n, String(n)]), get: () => pen.size, set: setPenSize });
 
       const F = $('features');
       segmented(F, {
         label: 'split rule',
-        title: 'how a ray of odd rise splits into halves: balanced has mean offset 0 in every cascade; alternating rounds away from zero in even cascades and toward it in odd ones',
+        title: 'how a ray of odd rise splits into halves',
         options: [['balanced', 'balanced'], ['alternating', 'alternating']],
         ...field(cfg, 'splitRule'),
         url: ['splitRule', 'balanced'],
       });
-      toggle(F, {
-        label: 'face emission',
-        title: 'a solid light emits from its faces, each read at its exact angle, so rectangular lights are exact up to the cone samples (about 1e-4). Off, its cells emit as cells do, at no extra cost; on, about 2.8× the memory and 3–6× the frame time',
-        ...field(cfg, 'solidLights'),
-        url: ['faces', true],
-      });
 
-      const O = $('output');
-      const redrawOnly = () => (redraw = true);
-      segmented(O, {
-        label: 'reference',
-        title: 'a reference of the same scene, or Digital HRC\'s difference from it; none selected shows Digital HRC. The scene locks while one is shown',
-        cols: 2,
-        options: [[1, 'path trace'], [2, 'exact'], [3, 'Δ path trace', 'error against the path trace'], [4, 'Δ exact', 'error against the exact reference']],
-        get: () => refMode,
-        set: (v) => setReference(refMode === v ? 0 : v),
-        url: ['ref', 0],
+      // the output panel (site/_shared/output-panel.ts)
+      const output = outputPanel($('output'), {
+        controls: { segmented, slider, pill },
+        display: out,
+        redraw: () => (redraw = true),
+        reference: { get: () => refMode, set: setReference },
+        referenceTitle: 'a reference of the same scene, or Digital HRC\'s difference from it; the scene locks while one is shown',
+        sceneTitle: 'lights red, solids blue, volumes tinted by opacity',
+        errorScheme: () => 'Digital HRC',
       });
-      O.lastElementChild.classList.add('reference');
-      segmented(O, {
-        label: 'exact: directions per pixel',
-        options: [[16, '16 N'], [64, '64 N']],
-        get: () => refDensity,
-        set: (v) => ((refDensity = v), (redraw = true)),
-        enabled: () => refMode === 2 || refMode === 4,
-        url: ['refdir', 64],
-      });
-      const refStatus = el('div', { className: 'hint' });
-      O.append(refStatus);
-      segmented(O, { label: 'map', key: 'b', title: 'linear: L · exposure clipped at 1; sRGB: 1 − e^−(L · exposure); banded: log10 bands', options: [['linear', 'linear'], ['srgb', 'sRGB'], ['banded', 'banded']], ...field(out, 'map', redrawOnly), url: ['map', 'srgb'] });
-      slider(O, {
-        label: 'exposure',
-        title: 'shown: mean radiance L = fluence / 2π, times the exposure (tonemap 1 − e^−L); banded shows log10(L · exposure)',
-        min: -1,
-        max: 3,
-        step: 0.05, // slider in log10(exposure)
-        get: () => Math.log10(out.exposure),
-        set: (v) => ((out.exposure = +(10 ** v).toPrecision(3)), redrawOnly()),
-        format: (v) => String(+(10 ** v).toPrecision(3)),
-      });
-      const pair = el('div', { className: 'pair' });
-      O.append(pair);
-      toggle(pair, { label: 'scene', key: 'v', title: 'lights red, solids blue, volumes tinted by how much of the pixel they hold', ...field(out, 'scene', redrawOnly), url: ['showScene', false] });
-      toggle(pair, { label: 'dither', title: 'display only: ±1 LSB triangular noise per screen pixel before 8-bit output, removes banding', ...field(out, 'dither', redrawOnly), url: ['dither', true] });
-
-      // ── Legend (viridis, same samples as the draw shader) ──
-      const VIRIDIS = [
-        [0.267, 0.0049, 0.3294], [0.2823, 0.095, 0.4173], [0.2788, 0.1755, 0.4834], [0.259, 0.2515, 0.5247],
-        [0.2297, 0.3224, 0.5457], [0.1994, 0.3876, 0.5546], [0.1727, 0.4488, 0.5579], [0.149, 0.5081, 0.5573],
-        [0.1276, 0.5669, 0.5506], [0.1206, 0.6258, 0.5335], [0.1579, 0.6838, 0.5017], [0.2461, 0.7389, 0.452],
-        [0.3692, 0.7889, 0.3829], [0.516, 0.8312, 0.2943], [0.6785, 0.8637, 0.1895], [0.8456, 0.8873, 0.0997],
-        [0.9932, 0.9062, 0.1439],
-      ];
-      const viridis = (t) => {
-        const s = Math.max(0, Math.min(1, t)) * 16, i = Math.min(Math.floor(s), 15), f = s - i;
-        return `rgb(${VIRIDIS[i].map((a, k) => Math.round((a + (VIRIDIS[i + 1][k] - a) * f) * 255)).join(',')})`;
-      };
-      // the error legend: the draw shader's errorColour, −1 through 0 (at most 1e-5) to +1, ticks at the exponents. Dragging the
-      // bar sets errorClip, symmetric about 0: errors of at least 10^errorClip show magenta (at the ends, 0, nothing does)
-      const sup = (s) => String(s).replace(/[-.0-9]/g, (c) => ({ '-': '⁻', '.': '·' })[c] ?? '⁰¹²³⁴⁵⁶⁷⁸⁹'[c]);
-      function errorLegend(L, scheme, onClip) {
-        const BRIGHTER = [[1, 1, 1], [0.957, 0.647, 0.51], [0.839, 0.376, 0.302], [0.404, 0, 0.122]];
-        const DARKER = [[1, 1, 1], [0.573, 0.773, 0.871], [0.263, 0.576, 0.765], [0.02, 0.188, 0.38]];
-        const colour = (t) => {   // t in [0, 1]: −1 at 0, 0 at ½, +1 at 1
-          const d = Math.abs(2 * t - 1);
-          if (errorClip < 0 && d >= (errorClip + 5) / 5) return 'rgb(217,51,199)';
-          const s = t < 0.5 ? DARKER : BRIGHTER, m = (Math.round(d * 50) / 50) * 3, i = Math.min(Math.floor(m), 2), f = m - i;
-          return `rgb(${s[i].map((a, k) => Math.round((a + (s[i + 1][k] - a) * f) * 255)).join(',')})`;
-        };
-        const b = el('div', { className: 'bar error', title: 'drag to mark errors of at least a size in magenta; double-click to clear' });
-        const marks = [el('i'), el('i')];
-        b.append(...marks);
-        const ticks = el('div', { className: 'ticks' });
-        Object.assign(ticks.style, { position: 'relative', height: '12px' });
-        for (const [x, label] of [[0, '−1'], [20, '−10⁻²'], [40, '−10⁻⁴'], [50, '0'], [60, '10⁻⁴'], [80, '10⁻²'], [100, '1']]) {
-          const s = el('span', { textContent: label });
-          Object.assign(s.style, { position: 'absolute', left: `${x}%`, transform: `translateX(${x === 0 ? '0' : x === 100 ? '-100%' : '-50%'})` });
-          ticks.append(s);
-        }
-        const caption = el('div', { className: 'caption' });
-        const draw = () => {
-          b.style.background = `linear-gradient(to right, ${Array.from({ length: 201 }, (_, k) => `${colour(k / 200)} ${k / 2}%`).join(',')})`;
-          const d = (errorClip + 5) / 5;
-          marks[0].style.left = `${50 - 50 * d}%`;
-          marks[1].style.left = `${50 + 50 * d}%`;
-          caption.textContent = `error: (${scheme} − reference) / reference in L · exposure (reference floored at 0.01), log scale, 10 bands per decade; white at 10⁻⁵ or less, reds brighter, blues darker` +
-            (errorClip < 0 ? `; magenta at least 10${sup(errorClip)}` : '');
-        };
-        const set = (e) => {
-          const r = b.getBoundingClientRect(), d = Math.min(1, Math.abs((2 * (e.clientX - r.left)) / r.width - 1));
-          errorClip = Math.min(0, Math.round((5 * d - 5) * 10) / 10);
-          draw();
-          onClip();
-        };
-        b.addEventListener('pointerdown', (e) => (b.setPointerCapture(e.pointerId), set(e)));
-        b.addEventListener('pointermove', (e) => b.hasPointerCapture(e.pointerId) && set(e));
-        b.addEventListener('dblclick', () => ((errorClip = 0), draw(), onClip()));
-        draw();
-        L.append(b, ticks, caption);
-      }
       function renderLegend() {
-        const L = $('legend');
-        L.innerHTML = '';
-        if (refMode >= 3) return errorLegend(L, 'Digital HRC', () => (redraw = true));
-        if (out.map !== 'banded') return;
-        const stops = [];
-        for (let i = 0; i < 22; i++) stops.push(`${viridis(i / 21)} ${(i / 22) * 100}% ${((i + 1) / 22) * 100}%`);
-        const ticks = ['−2.2', '−1.65', '−1.1', '−0.55', '0'];
-        const caption = 'log10(L · exposure), L = fluence / 2π, 10 bands per decade; solids black, lights red';
-        const b = el('div', { className: 'bar' });
-        b.style.background = `linear-gradient(to right, ${stops.join(',')})`;
-        L.append(b, el('div', { className: 'ticks' }, ...ticks.map((t) => el('span', { textContent: t }))), el('div', { className: 'caption', textContent: caption }));
+        output.legend($('legend'));
       }
 
-      // ════════════════════════════════════════════════════════════════════
-      // URL state: every control with url: [name, default] round-trips; plus scene and perf.
-      // ════════════════════════════════════════════════════════════════════
-      const enc = (v) => (v === true ? '1' : v === false ? '0' : String(v));
-      const dec = (s, def) => (typeof def === 'boolean' ? s === '1' : typeof def === 'number' ? Number(s) : s);
+      // URL state: every control with url: [name, default], plus scene and perf.
       let perfOpen = false, urlReady = false;
       function syncURL() {
         if (!urlReady) return;
         const p = new URLSearchParams();
-        if (currentScene !== 0) p.set('scene', scenes[currentScene].id);
-        for (const { spec } of controls) {
-          if (!spec.url) continue;
-          const [name, def] = spec.url, v = name === 'N' && freeN ? freeN : spec.get();   // a test's resolution is not saved
-          if (v !== def) p.set(name, typeof v === 'number' && !Number.isInteger(v) ? String(+v.toFixed(3)) : enc(v));
-        }
-        if (out.exposure !== 1) p.set('exposure', String(out.exposure));
+        if (sceneUI.current !== 0) p.set('scene', scenes[sceneUI.current].id);
+        writeControls(p, controls, (name, v) => (name === 'N' && sceneUI.freeN ? sceneUI.freeN : v));   // a test's resolution is not saved
         if (perfOpen) p.set('perf', '1');
-        const qs = p.toString();
-        history.replaceState(null, '', qs ? '?' + qs : location.pathname);
+        replaceURL(p);
       }
       function loadURL() {
         const p = new URLSearchParams(location.search);
-        for (const { spec } of controls) {
-          if (!spec.url) continue;
-          const [name, def] = spec.url;
-          spec.set(p.has(name) ? dec(p.get(name), def) : def);
-        }
+        readControls(p, controls);
         if (!PROBES.includes(cfg.N)) cfg.N = 256;
-        out.exposure = Number(p.get('exposure')) || 1;
         perfOpen = p.get('perf') === '1';
-        const s = p.get('scene') ?? '0';
-        const byId = scenes.findIndex((x) => x.id === s);
-        return byId >= 0 ? byId : Number.isFinite(Number(s)) ? Number(s) : 0;
+        return sceneFromURL(p, scenes);
       }
 
-      // ════════════════════════════════════════════════════════════════════
-      // WebGPU: the cascade (rebuilt when cfg changes) and a draw pass straight from its output buffer.
-      // ════════════════════════════════════════════════════════════════════
+      // WebGPU: the cascade (rebuilt when cfg changes) and a draw pass from its fluence buffer.
       const fail = (msg) => {
         $('error').textContent = msg;
         $('error').classList.add('open');
@@ -1002,8 +379,12 @@
         throw new Error('no WebGPU');
       }
       const device = await adapter.requestDevice({
+        requiredFeatures: Profiler.features(adapter),
         requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize },
       });
+      // GPU profile (off until the fps is clicked): while on, the cascade is solved every frame
+      const profiler = new Profiler(device);
+      $('canvas-area').append(profiler.panel());
       device.addEventListener('uncapturederror', (e) => {
         console.error(e.error.message);
         fail(e.error.message);
@@ -1018,39 +399,15 @@
         @group(0) @binding(1) var<storage, read> A: array<f32>;
         @group(0) @binding(2) var<storage, read> E: array<f32>;
         struct Draw {
-          P: vec4f,   // N, exposure / 2π (fluence → mean radiance), map (0 linear, 1 sRGB, 2 banded), reference view
-          Q: vec4f,   // canvas size in device pixels, dither (0 / 1), scene (0 / 1)
+          P: vec4f,   // N, exposure / 2 pi (fluence to mean radiance), map (0 tone map, 1 banded), reference view
+          Q: vec4f,   // canvas size in device pixels, unused, scene (0 / 1)
           R: vec4f,   // error clip (errors of at least it show magenta), unused
         }
         @group(0) @binding(3) var<uniform> D: Draw;
         @group(0) @binding(4) var<storage, read> R: array<f32>;   // the reference's radiance per pixel
-        const VIR = array<vec3f, 17>(${VIRIDIS.map((c) => `vec3f(${c.join(', ')})`).join(', ')});
-        fn viridis(t: f32) -> vec3f {
-          let s = clamp(t, 0.0, 1.0) * 16.0; let i = min(u32(s), 15u);
-          return mix(VIR[i], VIR[i + 1u], s - f32(i));
-        }
-        fn srgb(c: vec3f) -> vec3f { return select(1.055 * pow(c, vec3f(1.0 / 2.4)) - 0.055, 12.92 * c, c <= vec3f(0.0031308)); }
-        @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
-          let p = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0)); return vec4f(p[i], 0.0, 1.0);
-        }
-        // display dither: triangular noise of ±1 LSB of the 8-bit output, per device pixel (removes banding, mean 0)
-        fn hash(p: vec2f) -> f32 { return fract(sin(dot(p, vec2f(12.9898, 78.233))) * 43758.5453); }
-        fn dither(c: vec3f, q: vec2f) -> vec4f {
-          let n = (hash(q) + hash(q + vec2f(17.3, 5.1)) - 1.0) / 255.0;
-          return vec4f(c + n * D.Q.z, 1.0);
-        }
-        // the error against the reference, (scheme − reference) / reference in displayed units (L · exposure, the reference
-        // floored at 0.01), on a log scale in bands of 0.1 decade: white at 1e-5 or less, darkest at 1; reds where the scheme
-        // is brighter, blues where darker (ColorBrewer RdBu, sRGB)
-        fn errorColour(fs: f32, fr: f32, k: f32, clip: f32) -> vec3f {
-          let e = (fs - fr) * k / max(fr * k, 0.01);
-          if (abs(e) >= clip) { return vec3f(0.85, 0.2, 0.78); }   // at least the clip the legend sets: magenta
-          let m = 3.0 * clamp((floor(log(max(abs(e), 1e-9)) / log(10.0) * 10.0) / 10.0 + 5.0) / 5.0, 0.0, 1.0);
-          var stops = array<vec3f, 4>(vec3f(1.0), vec3f(0.957, 0.647, 0.510), vec3f(0.839, 0.376, 0.302), vec3f(0.404, 0.0, 0.122));
-          if (e < 0.0) { stops = array<vec3f, 4>(vec3f(1.0), vec3f(0.573, 0.773, 0.871), vec3f(0.263, 0.576, 0.765), vec3f(0.020, 0.188, 0.380)); }
-          let i = min(u32(m), 2u);
-          return mix(stops[i], stops[i + 1u], m - f32(i));
-        }
+        ${DISPLAY_WGSL}
+        ${DRAW_WGSL}
+        fn srgb(c: vec3f) -> vec3f { return srgbEncode(c); }
         @fragment fn fs(@builtin(position) q: vec4f) -> @location(0) vec4f {
           let P = D.P;
           let N = i32(P.x); let cell = vec2i(floor(q.xy / D.Q.xy * P.x));
@@ -1066,18 +423,12 @@
           var S = 0.0;   // the material's radiance, from E and A (see material() in the page)
           if (e > 0.0) { S = select(select(e, e / max(-log(a), 1e-6), a < 1.0), e, a <= 0.0); }
           let opaque = a <= 0.0;   // solids: lights show their radiance, the rest dark slate
-          if (P.z > 1.5) {   // banded
-            if (opaque) { return vec4f(select(vec3f(0.0), vec3f(0.85, 0.15, 0.1), e > 0.0), 1.0); }
-            let lv = log(max(f, 1e-9)) / log(10.0);
-            let t = (floor(lv * 10.0) / 10.0 + 2.2) / 2.2;
-            return dither(srgb(viridis(t)), q.xy);
-          }
-          let tint = D.Q.w > 0.5;   // the scene: lights red, solids blue, volumes by how much of the cell they hold
+          let tint = D.Q.w > 0.5;   // the scene: lights red, solids blue, volumes by opacity
           if (opaque) {
             if (e > 0.0) { return vec4f(select(srgb(vec3f(min(1.0, S * 1.25))), vec3f(1.0, 0.2, 0.15), tint), 1.0); }
             return vec4f(select(vec3f(0.11, 0.115, 0.13), vec3f(0.15, 0.3, 1.0), tint), 1.0);
           }
-          var c = srgb(vec3f(select(1.0 - exp(-f), min(f, 1.0), P.z < 0.5)));
+          var c = displayed(vec3f(f), P.z);
           if (tint) {
             if (e > 0.0) { c = mix(c, vec3f(1.0, 0.2, 0.15), 0.7); }
             else if (a < 1.0) { c = mix(c, vec3f(0.15, 0.3, 1.0), 0.25 + 0.6 * (1.0 - a)); }
@@ -1087,7 +438,7 @@
       });
       const drawPipe = device.createRenderPipeline({
         layout: 'auto',
-        vertex: { module: drawModule, entryPoint: 'vs' },
+        vertex: { module: drawModule, entryPoint: 'vertexMain' },
         fragment: { module: drawModule, entryPoint: 'fs', targets: [{ format }] },
         primitive: { topology: 'triangle-list' },
       });
@@ -1099,10 +450,14 @@
         if (key === cascadeKey) return cascade;
         if (cascade) for (const v of Object.values(cascade)) if (v instanceof GPUBuffer) v.destroy();
         const N = cfg.N;
-        cascade = new DigitalHRC(device, N, { splitRule: cfg.splitRule, solidLights: cfg.solidLights });
+        cascade = new DigitalHRC(device, N, { splitRule: cfg.splitRule });
+        cascade.profiler = profiler;
+        profiler.reset();
         cascadeKey = key;
-        reference?.destroy();
-        reference = new Reference(device, N);
+        if (reference?.N !== N) {   // the reference depends on the scene and N only, not on the scheme's settings
+          reference?.destroy();
+          reference = new Reference(device, N, { probes: 'cell' });   // pixel means, like the scheme's output
+        }
         E = new Float32Array(N * N);
         A = new Float32Array(N * N);
         const mb = (cascade.rayBuffer.size + cascade.beyondSampleBuffer.size) / 2 ** 20;
@@ -1110,26 +465,25 @@
         layout();
         return cascade;
       }
-      function encodeDraw(enc, g) {
-        const mapId = { linear: 0, srgb: 1, banded: 2 }[out.map];
-        device.queue.writeBuffer(drawU, 0, new Float32Array([
-          g.N, out.exposure / (2 * Math.PI), mapId, refMode,
-          view.width, view.height, out.dither ? 1 : 0, out.scene ? 1 : 0,
-          errorClip < 0 ? 10 ** errorClip : 1e9, 0, 0, 0,
+      function encodeDraw(enc, g, timestampWrites) {
+                device.queue.writeBuffer(drawU, 0, new Float32Array([
+          g.N, (EXPOSURE * 2 ** out.stops) / (2 * Math.PI), MAP_INDEX[out.map], refMode,
+          view.width, view.height, 0, out.scene ? 1 : 0,
+          output.clip(), 0, 0, 0,
         ]));
         const R = pathTracing() ? reference.pathTraceOutput : reference.exactOutput;
         const drawBG = device.createBindGroup({
           layout: drawPipe.getBindGroupLayout(0),
           entries: [g.fluenceBuffer, g.transmittanceBuffer, g.emissionBuffer, drawU, R].map((buffer, binding) => ({ binding, resource: { buffer } })),
         });
-        const pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
+        const pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }], timestampWrites });
         pass.setPipeline(drawPipe);
         pass.setBindGroup(0, drawBG);
         pass.draw(3);
         pass.end();
       }
 
-      // ── reference ──
+      // reference
       function setReference(v) {
         refMode = v;
         document.body.classList.toggle('locked', locked());
@@ -1137,14 +491,8 @@
         if (!(refMode === 2 || refMode === 4)) reference?.pauseExact();
         touch();   // solve again (without the cursor's light) and give the reference this scene
       }
-      const fmtTime = (ms) => (!isFinite(ms) ? '…' : ms < 60e3 ? `${(ms / 1000).toFixed(ms < 10e3 ? 1 : 0)} s` : `${Math.floor(ms / 60e3)} m ${Math.round((ms % 60e3) / 1000)} s`);
       function renderRefStatus() {
-        const st = refMode === 2 || refMode === 4 ? reference?.exactProgress : null;
-        refStatus.textContent = !refMode ? ''
-          : pathTracing() ? `path trace · ${reference.pathTraceFrames * 16} samples per pixel`
-          : !st ? 'exact · starting…'
-          : st.done ? `exact · ${st.m} directions per pixel · took ${fmtTime(st.elapsedMs)}`
-          : `exact · ${(st.fraction * 100).toFixed(1)} % · ${fmtTime(st.etaMs)} left`;
+        output.status(reference);
       }
       // the reference's input: radiance and transmittance per pixel (see site/_shared/reference.ts)
       function uploadReference() {
@@ -1153,7 +501,7 @@
         reference.upload(S, A);
       }
 
-      // ── layout: the largest square in the canvas area, 32 px margin ──
+      // layout: the largest square in the canvas area, 32 px margin
       const squareRect = () => view.getBoundingClientRect();
       function layout() {
         const r = $('canvas-area').getBoundingClientRect();
@@ -1164,7 +512,7 @@
       }
       window.addEventListener('resize', layout);
 
-      // ── frame loop: recompute only when the scene changed, redraw when the output settings changed ──
+      // frame loop: recompute only when the scene changed, redraw when the output settings changed
       let busy = false, cpuMs = 0, gpuMs = 0, solves = 0, frameMs = 0, solveN = 0;
       // the selected shape's outline, in CSS pixels over the canvas
       function placeSelection() {
@@ -1181,31 +529,34 @@
         requestAnimationFrame(frame);
         placeSelection();
         if (refMode && reference && (reference.version !== drawnVersion || (pathTracing() && reference.pathTraceFrames < 1024))) redraw = true;
-        if (busy || !(dirty || redraw)) return;
+        if (busy || !(dirty || redraw || profiler.enabled)) return;
         busy = true;
-        const solve = dirty;
+        const scene = dirty, solve = dirty || profiler.enabled;
         dirty = redraw = false;
         const fresh = cascade === null || JSON.stringify(cfg) !== cascadeKey;
         const g = engine();
         const t0 = performance.now();
-        const enc = device.createCommandEncoder();
-        if (solve) {
+        if (scene) {
           rasterise(g.N);
           g.upload(E, A);
-          g.encodeAll(enc);
         }
+        profiler.beginFrame();
+        const enc = device.createCommandEncoder();
+        if (solve) g.encodeAll(enc);
         if (refMode) {
-          if (solve) uploadReference();
+          if (scene) uploadReference();
           if (pathTracing() && reference.pathTraceFrames < 1024) reference.encodePathTrace(enc);
-          if (refMode === 2 || refMode === 4) reference.startExact(refDensity * g.N);
+          if (refMode === 2 || refMode === 4) reference.startExact(EXACT_DENSITY * g.N);
           drawnVersion = reference.version;
           renderRefStatus();
         }
         const t1 = performance.now();
-        encodeDraw(enc, g);
+        encodeDraw(enc, g, profiler.timestampWrites('draw'));
+        profiler.endFrame(enc);
         device.queue.submit([enc.finish()]);
+        profiler.collect();
         await device.queue.onSubmittedWorkDone();
-        if (solve && !fresh) {   // the first solve after a rebuild includes pipeline compilation
+        if (scene && !fresh) {   // the first solve after a rebuild includes pipeline compilation
           cpuMs = t1 - t0;
           gpuMs = performance.now() - t1;
           frameMs = solveN === g.N ? frameMs + (cpuMs + gpuMs - frameMs) * 0.3 : cpuMs + gpuMs;   // restart at a new N
@@ -1215,14 +566,12 @@
         busy = false;
       }
 
-      // ════════════════════════════════════════════════════════════════════
       // Tools: fps / perf, screenshot, help
-      // ════════════════════════════════════════════════════════════════════
       function screenshot() {
         const g = engine(), enc = device.createCommandEncoder();
         encodeDraw(enc, g);
         device.queue.submit([enc.finish()]);
-        view.toBlob((b) => b && Object.assign(document.createElement('a'), { href: URL.createObjectURL(b), download: `digital-hrc-${scenes[currentScene].id}-${g.N}-${Date.now()}.png` }).click());
+        view.toBlob((b) => b && Object.assign(document.createElement('a'), { href: URL.createObjectURL(b), download: `digital-hrc-${scenes[sceneUI.current].id}-${g.N}-${Date.now()}.png` }).click());
       }
       $('shot-btn').addEventListener('click', screenshot);
 
@@ -1288,92 +637,20 @@
       };
       $('help-btn').addEventListener('click', () => toggleHelp());
 
-      // ── FPS + perf graph (js = rasterise + encode, gpu = submit to done) ──
-      const fpsEl = $('fps'), perfGraph = $('perf-graph'), perfCanvas = $('perf-canvas'), perfCtx = perfCanvas.getContext('2d');
-      const DPR = window.devicePixelRatio || 1;
-      const GW = 340, GH = 130, ML = 30, PW = GW - ML, PH = GH;
-      perfCanvas.width = GW * DPR;
-      perfCanvas.height = GH * DPR;
-      perfCanvas.style.width = GW + 'px';
-      perfCanvas.style.height = GH + 'px';
-      const cpuSamples = new Float32Array(PW), gpuSamples = new Float32Array(PW);
-      let sampleIdx = 0, scaleMax = 20, avgCpu = 0, avgGpu = 0, avgFps = 0;
-      fpsEl.addEventListener('click', () => {
-        perfOpen = !perfOpen;
-        perfGraph.classList.toggle('open', perfOpen);
+      // fps; clicking it opens the GPU profile (site/_shared/profiler.ts)
+      const fpsEl = $('fps');
+      const toggleProfile = (on = !perfOpen) => {
+        perfOpen = profiler.enabled = on;
         syncURL();
-      });
-      const TICKS = [2, 4, 8, 16, 32, 64, 128];
-      function drawPerfGraph() {
-        const ctx = perfCtx;
-        ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-        ctx.clearRect(0, 0, GW, GH);
-        let dataMax = 1;
-        for (let i = 0; i < PW; i++) dataMax = Math.max(dataMax, cpuSamples[i] + gpuSamples[i]);
-        const ceilTick = TICKS.find((t) => t >= dataMax) ?? TICKS[TICKS.length - 1];
-        const target = Math.max(ceilTick * 1.1, 8);
-        if (target > scaleMax) scaleMax = target;
-        else scaleMax += (target - scaleMax) * 0.03;
-        const sqrtMax = Math.sqrt(scaleMax);
-        const toY = (ms) => PH - (Math.sqrt(Math.max(0, ms)) / sqrtMax) * PH;
-        ctx.fillStyle = 'rgba(255,255,255,0.03)';
-        ctx.fillRect(ML, 0, PW, PH);
-        ctx.font = '9px monospace';
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'middle';
-        for (const ms of TICKS) {
-          if (ms > scaleMax * 0.98) continue;
-          const y = toY(ms);
-          if (y < 6 || y > PH - 4) continue;
-          const budget = ms === 16 || ms === 32;
-          ctx.strokeStyle = budget ? 'rgba(100,255,100,0.2)' : 'rgba(255,255,255,0.06)';
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(ML, y);
-          ctx.lineTo(GW, y);
-          ctx.stroke();
-          ctx.fillStyle = budget ? 'rgba(100,255,100,0.5)' : 'rgba(255,255,255,0.25)';
-          ctx.fillText(`${ms}`, ML - 3, y);
-        }
-        const line = (samples, color) => {
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 1.2;
-          ctx.beginPath();
-          for (let i = 0; i < PW; i++) {
-            const y = Math.max(0, Math.min(PH, toY(samples[(sampleIdx + i) % PW])));
-            i === 0 ? ctx.moveTo(ML + i, y) : ctx.lineTo(ML + i, y);
-          }
-          ctx.stroke();
-        };
-        line(cpuSamples, 'rgba(100,200,255,0.85)');
-        line(gpuSamples, 'rgba(255,150,80,0.85)');
-      }
-      let lastFpsUpdate = 0, lastSolves = 0;
-      (function tick(now) {
-        avgCpu += (cpuMs - avgCpu) * 0.05;
-        avgGpu += (gpuMs - avgGpu) * 0.05;
-        cpuSamples[sampleIdx] = cpuMs;
-        gpuSamples[sampleIdx] = gpuMs;
-        sampleIdx = (sampleIdx + 1) % PW;
-        if (now - lastFpsUpdate > 250) {
-          const fps = ((solves - lastSolves) * 1000) / Math.max(1, now - lastFpsUpdate);
-          avgFps += (fps - avgFps) * 0.5;
-          lastSolves = solves;
-          lastFpsUpdate = now;
-          if (!benching) fpsEl.textContent = solveN === cfg.N ? `${solveN}² · ${frameMs.toFixed(1)} ms / frame` : `${cfg.N}² · move to time`;
-        }
-        if (perfOpen) {
-          drawPerfGraph();
-          $('perf-fps').textContent = `${Math.round(avgFps)} fps while changing`;
-          $('perf-cpu-val').textContent = `js ${avgCpu.toFixed(1)}ms`;
-          $('perf-gpu-val').textContent = `gpu ${avgGpu.toFixed(1)}ms`; // perf graph: running averages
-        }
-        requestAnimationFrame(tick);
-      })(0);
+      };
+      fpsEl.addEventListener('click', () => toggleProfile());
+      setInterval(() => {
+        if (benching) return;
+        fpsEl.textContent = profiler.enabled ? `${cfg.N}² · GPU ${profiler.stats().gpuMs.toFixed(1)} ms, profiled`
+          : solveN === cfg.N ? `${solveN}² · ${frameMs.toFixed(1)} ms wall` : `${cfg.N}² · move to time`;
+      }, 250);
 
-      // ════════════════════════════════════════════════════════════════════
       // Keyboard
-      // ════════════════════════════════════════════════════════════════════
       document.addEventListener('keydown', async (e) => {
         if (e.metaKey || e.ctrlKey || e.altKey) return;
         const t = e.target;
@@ -1384,13 +661,13 @@
           if (e.shiftKey) {
             switchScene(+d[1]);
             changed();
-          } else if (!locked() && +d[1] >= 1 && +d[1] <= KINDS.length) (selectShape(null), setPen('kind', KINDS[+d[1] - 1][0]));
+          } else if (!locked() && +d[1] >= 1 && +d[1] <= KINDS.length) (selectShape(null), setPen('kind', KINDS[+d[1] - 1][0]), refresh());
           return;
         }
         let handled = true;
         switch (e.key) {
           case 'v': case 'V': out.scene = !out.scene; redraw = true; changed(); break;
-          case 'b': case 'B': out.map = { linear: 'srgb', srgb: 'banded', banded: 'linear' }[out.map]; redraw = true; changed(); break;
+          case 'b': case 'B': out.map = out.map === 'tone' ? 'banded' : 'tone'; redraw = true; changed(); break;
           case '?': toggleHelp(); break;
           case 'Escape': toggleHelp(false); selectShape(null); break;
           case '=': case '+': stepPenSize(1); break;
@@ -1407,8 +684,8 @@
             console.log(`one quadrant: ${Object.values(r).reduce((a, b) => a + b, 0).toFixed(2)} ms (×4 for a frame)`);
             break;
           }
-          case 'ArrowRight': switchScene(currentScene + 1); changed(); break;
-          case 'ArrowLeft': switchScene(currentScene - 1); changed(); break;
+          case 'ArrowRight': switchScene(sceneUI.current + 1); changed(); break;
+          case 'ArrowLeft': switchScene(sceneUI.current - 1); changed(); break;
           case 'n': case 'N':
             if (locked()) break;
             shapes.push({ x: -30, y: -30, w: 60, h: 60, ...(pen.kind === 'eraser' ? { rgb: [0, 0, 0], opacity: 1 } : penMaterial()) });
@@ -1432,74 +709,20 @@
         }
       });
 
-      // ════════════════════════════════════════════════════════════════════
       // Pointer: drag a shape (topmost under the pointer), or draw / erase strokes; the cursor is a pen-material light
-      // ════════════════════════════════════════════════════════════════════
-      const toScene = (e) => {
-        const r = squareRect();
-        return [((e.clientX - r.left) / r.width - 0.5) * SPAN, ((e.clientY - r.top) / r.height - 0.5) * SPAN];
-      };
-      const cellUnits = () => SPAN / cfg.N;
-      const shapeAt = ([u, v]) => {
-        const pad = cellUnits() / 2; // shapes thinner than a cell still pick
-        for (let i = shapes.length - 1; i >= 0; i--) {
-          const s = shapes[i];
-          if (u >= s.x - pad && u <= s.x + s.w + pad && v >= s.y - pad && v <= s.y + s.h + pad) return s;
-        }
-        return null;
-      };
-      let drawing = false, drag = null, last = null;
-      view.addEventListener('pointerdown', (e) => {
-        if (locked()) return;
-        const p = toScene(e);
-        view.setPointerCapture(e.pointerId);
-        const s = shapeAt(p);
-        if (s && pen.kind !== 'eraser') {
-          selectShape(s);
-          drag = { s, dx: s.x - p[0], dy: s.y - p[1] };
-          view.className = 'grabbing';
-        } else {
-          selectShape(null);
-          drawing = true;
-          last = p;
-          paint(p, p);
-        }
-        e.preventDefault();
-      });
-      function paint(a, b) {
-        if (pen.kind === 'eraser') {
-          const r = Math.max(pen.size, 2) * cellUnits();
-          const near = (s) => {
-            const vx = s.x1 - s.x0, vy = s.y1 - s.y0, L = vx * vx + vy * vy;
-            const t = L > 0 ? Math.max(0, Math.min(1, ((b[0] - s.x0) * vx + (b[1] - s.y0) * vy) / L)) : 0;
-            return Math.hypot(s.x0 + t * vx - b[0], s.y0 + t * vy - b[1]) < r;
-          };
-          strokes = strokes.filter((s) => !near(s));
-        } else strokes.push({ x0: a[0], y0: a[1], x1: b[0], y1: b[1], size: pen.size * cellUnits(), ...penMaterial() });
-        touch();
-      }
-      view.addEventListener('pointermove', (e) => {
-        if (locked()) return;
-        const p = toScene(e);
-        cursor = p;
-        if (drag) Object.assign(drag.s, { x: p[0] + drag.dx, y: p[1] + drag.dy });
-        else if (drawing && Math.hypot(p[0] - last[0], p[1] - last[1]) >= cellUnits()) {
-          paint(last, p);
-          last = p;
-        } else if (!drawing) view.className = shapeAt(p) && pen.kind !== 'eraser' ? 'grab' : '';
-        touch();
-      });
-      const end = () => {
-        drawing = false;
-        drag = null;
-        view.className = '';
-        touch();
-      };
-      view.addEventListener('pointerup', end);
-      view.addEventListener('pointercancel', end);
-      view.addEventListener('pointerleave', () => {
-        cursor = null;
-        touch();
+      const pointer = penPointer(view, {
+        span: SPAN,
+        N: () => cfg.N,
+        locked,
+        shapes: () => shapes,
+        rect: (s) => [s.x, s.y, s.w, s.h],
+        move: (s, x, y) => Object.assign(s, { x, y }),
+        select: selectShape,
+        eraser: () => pen.kind === 'eraser',
+        size: () => pen.size,
+        strokes: { get: () => strokes, set: (s) => (strokes = s), material: () => penMaterial() },
+        cursor: (p) => (cursor = p),
+        touch,
       });
       // a click beside the square deselects
       $('canvas-area').addEventListener('pointerdown', (e) => {
@@ -1507,12 +730,12 @@
       });
 
       // hooks for scripts
-      window.digitalHRC = { cfg, out, device, engine, touch, bench, reference: () => reference, stats: () => ({ cpuMs, gpuMs, solves, frameMs }), scene: () => ({ shapes, strokes, E, A }) };
+      window.digitalHRC = { cfg, out, device, engine, touch, bench, profiler, reference: () => reference, stats: () => ({ cpuMs, gpuMs, solves, frameMs }), scene: () => ({ shapes, strokes, E, A }) };
 
-      // ── Init ──
+      // init
       const initScene = loadURL();
       urlReady = true;
-      perfGraph.classList.toggle('open', perfOpen);
+      if (perfOpen) toggleProfile(true);
       syncPen();
       refresh();
       layout();

@@ -4,322 +4,32 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HRC</title>
-    <meta name="description" content="Testbed for trying new HRC things forked from my 'production' version" />
+    <meta name="description" content="HRC as in the paper, with volumetrics, bounces and an exact reference; the baseline the other schemes are compared against" />
     <meta name="order" content="1" />
+    <link rel="stylesheet" href="../_shared/page.css" />
     <style>
-      *,
-      *::before,
-      *::after {
-        box-sizing: border-box;
-      }
-      :root {
-        --bg: #0e0e0e;
-        --panel: #151515;
-        --line: rgba(255, 255, 255, 0.08);
-        --text: rgba(255, 255, 255, 0.82);
-        --dim: rgba(255, 255, 255, 0.45);
-        --faint: rgba(255, 255, 255, 0.28);
-        --ctl: rgba(255, 255, 255, 0.06);
-        --ctl-hover: rgba(255, 255, 255, 0.11);
-        --on: #d8d8d8;
-        --on-text: #111;
-        --accent: #7fc8a9;
-        --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
-      }
-      html,
-      body {
-        height: 100%;
-        margin: 0;
-        overflow: hidden;
-      }
-      body {
-        display: grid;
-        grid-template-columns: 236px minmax(0, 1fr) 252px;
-        background: var(--bg);
-        color: var(--text);
-        font: 12px/1.35 system-ui, -apple-system, 'Segoe UI', sans-serif;
-      }
-      #canvas-area {
-        position: relative;
-        min-width: 0;
-        overflow: hidden;
-      }
       #hrc {
         position: absolute;
         inset: 0;
         overflow: hidden;
         pointer-events: none;
       }
-      /* shape divs (ShapeEditor) live in viewport coordinates on a fixed layer over the canvas */
-      #shapes {
-        position: fixed;
-        inset: 0;
-        pointer-events: none;
-        z-index: 1;
-      }
-      .shape {
-        position: absolute;
-        box-sizing: border-box;
-        cursor: move;
+      /* the scene square: the pen draws on it and drags shapes */
+      #hrc canvas {
+        pointer-events: auto !important;   /* over hrc.ts's inline none */
         touch-action: none;
-        transform-origin: center;
+        cursor: crosshair;
       }
-      .shape.selected {
-        outline: 2px solid rgba(100, 180, 255, 0.8);
+      #hrc canvas.grab {
+        cursor: grab;
       }
-      .shape-handle {
-        position: absolute;
-        width: 9px;
-        height: 9px;
-        margin: -5px 0 0 -5px;
-        box-sizing: border-box;
-        background: #fff;
-        border: 1px solid #3b82f6;
+      #hrc canvas.grabbing {
+        cursor: grabbing;
       }
-
       /* ── Panels ── */
-      aside {
-        position: relative;
-        z-index: 10;
-        background: var(--panel);
-        overflow-y: auto;
-        scrollbar-width: thin;
-        user-select: none;
-        display: flex;
-        flex-direction: column;
-      }
-      #left {
-        border-right: 1px solid var(--line);
-      }
       #right {
         border-left: 1px solid var(--line);
       }
-      section {
-        padding: 12px 12px 14px;
-        border-bottom: 1px solid var(--line);
-      }
-      section > h2 {
-        margin: 0 0 10px;
-        font-size: 10px;
-        font-weight: 600;
-        letter-spacing: 1.4px;
-        text-transform: uppercase;
-        color: var(--dim);
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-      }
-      section > h2 small {
-        font-weight: 400;
-        letter-spacing: 0;
-        text-transform: none;
-        color: var(--faint);
-        font-family: var(--mono);
-      }
-      .field {
-        margin-top: 10px;
-      }
-      .field:first-of-type {
-        margin-top: 0;
-      }
-      .field > .label {
-        font-size: 11px;
-        color: var(--dim);
-        margin-bottom: 4px;
-        display: flex;
-        justify-content: space-between;
-      }
-      .field > .label .val {
-        font-family: var(--mono);
-        color: var(--text);
-      }
-      .field.disabled {
-        opacity: 0.35;
-        pointer-events: none;
-      }
-      kbd {
-        font-family: var(--mono);
-        font-size: 10px;
-        color: var(--faint);
-        border: 1px solid var(--line);
-        border-radius: 3px;
-        padding: 0 3px;
-        line-height: 14px;
-      }
-
-      /* segmented pick-one */
-      .seg {
-        display: grid;
-        grid-auto-flow: column;
-        grid-auto-columns: 1fr;
-        gap: 2px;
-        background: var(--ctl);
-        border-radius: 6px;
-        padding: 2px;
-      }
-      .seg.wrap {
-        grid-auto-flow: row;
-        grid-template-columns: repeat(var(--cols, 3), 1fr);
-      }
-      .seg button {
-        font: inherit;
-        font-size: 11px;
-        color: var(--dim);
-        background: none;
-        border: 0;
-        border-radius: 4px;
-        padding: 4px 2px;
-        cursor: pointer;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .seg button:hover {
-        color: var(--text);
-        background: var(--ctl-hover);
-      }
-      .seg button.on {
-        background: var(--on);
-        color: var(--on-text);
-      }
-
-      /* on/off toggle */
-      .toggle {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        width: 100%;
-        font: inherit;
-        color: var(--text);
-        background: none;
-        border: 0;
-        padding: 5px 0;
-        cursor: pointer;
-        text-align: left;
-      }
-      .toggle .sw {
-        flex: none;
-        width: 26px;
-        height: 14px;
-        border-radius: 7px;
-        background: rgba(255, 255, 255, 0.14);
-        position: relative;
-        transition: background 0.12s;
-      }
-      .toggle .sw::after {
-        content: '';
-        position: absolute;
-        top: 2px;
-        left: 2px;
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        background: rgba(255, 255, 255, 0.7);
-        transition: transform 0.12s;
-      }
-      .toggle.on .sw {
-        background: var(--accent);
-      }
-      .toggle.on .sw::after {
-        transform: translateX(12px);
-        background: #fff;
-      }
-      .toggle .name {
-        flex: 1;
-      }
-      .toggle:hover .name {
-        color: #fff;
-      }
-
-      /* scene list */
-      #scene-list {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 1px 2px;
-      }
-      #scene-list .group {
-        grid-column: 1 / -1;
-        font-size: 10px;
-        color: var(--faint);
-        margin: 7px 0 1px;
-      }
-      #scene-list .group:first-child {
-        margin-top: 0;
-      }
-      #scene-list button {
-        font: inherit;
-        text-align: left;
-        color: var(--dim);
-        background: none;
-        border: 0;
-        border-radius: 4px;
-        padding: 3px 4px;
-        cursor: pointer;
-        display: flex;
-        gap: 4px;
-        min-width: 0;
-        white-space: nowrap;
-        overflow: hidden;
-      }
-      #scene-list button .idx {
-        font-family: var(--mono);
-        font-size: 10px;
-        color: var(--faint);
-        width: 13px;
-        flex: none;
-        text-align: right;
-        line-height: 16px;
-      }
-      #scene-list button:hover {
-        background: var(--ctl);
-        color: var(--text);
-      }
-      #scene-list button.on {
-        background: var(--on);
-        color: var(--on-text);
-      }
-      #scene-list button.on .idx {
-        color: rgba(0, 0, 0, 0.5);
-      }
-
-      /* sliders */
-      input[type='range'] {
-        -webkit-appearance: none;
-        appearance: none;
-        width: 100%;
-        height: 16px;
-        background: transparent;
-        outline: none;
-        cursor: pointer;
-        margin: 0;
-      }
-      input[type='range']::-webkit-slider-runnable-track {
-        height: 3px;
-        background: rgba(255, 255, 255, 0.14);
-        border-radius: 2px;
-      }
-      input[type='range']::-webkit-slider-thumb {
-        -webkit-appearance: none;
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        background: rgba(255, 255, 255, 0.75);
-        border: none;
-        margin-top: -4.5px;
-      }
-      input[type='range']::-moz-range-track {
-        height: 3px;
-        background: rgba(255, 255, 255, 0.14);
-        border-radius: 2px;
-      }
-      input[type='range']::-moz-range-thumb {
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        background: rgba(255, 255, 255, 0.75);
-        border: none;
-      }
-
       /* pen */
       #swatches {
         display: flex;
@@ -359,91 +69,12 @@
         border: 1.5px solid rgba(255, 255, 255, 0.12);
         border-radius: 4px;
       }
-      .hint {
-        margin-top: 8px;
-        font-size: 10.5px;
-        color: var(--faint);
-      }
-
-      /* legend */
-      #legend {
-        margin-top: 10px;
-      }
-      #legend .bar {
-        height: 10px;
-        border-radius: 2px;
-      }
-      #legend .ticks {
-        display: flex;
-        justify-content: space-between;
-        font-family: var(--mono);
-        font-size: 9px;
-        color: var(--faint);
-        margin-top: 2px;
-      }
-      #legend .caption {
-        font-size: 10.5px;
-        color: var(--faint);
-        margin-top: 4px;
-      }
-
       /* status / tools */
-      #tools {
-        margin-top: auto;
-        padding: 8px 12px;
-        border-top: 1px solid var(--line);
-        border-bottom: 0;
-        display: flex;
-        align-items: center;
-        gap: 4px;
-      }
-      #tools button {
-        font: inherit;
-        font-size: 11px;
-        color: var(--dim);
-        background: var(--ctl);
-        border: 0;
-        border-radius: 4px;
-        padding: 3px 7px;
-        cursor: pointer;
-      }
-      #tools button:hover {
-        color: var(--text);
-        background: var(--ctl-hover);
-      }
-      #tools button.on {
-        background: var(--on);
-        color: var(--on-text);
-      }
       #fps {
         font-family: var(--mono);
         font-size: 11px;
         color: var(--dim);
         margin-right: auto;
-      }
-
-      /* the scene lock's colour: the outline around the locked square and the selected reference */
-      :root {
-        --lock: #d4665a;
-      }
-      .reference .seg button.on {
-        background: var(--lock);
-        color: #fff;
-      }
-      /* the error legend's bar: drag to mark errors above a size in magenta */
-      #legend .bar.error {
-        position: relative;
-        cursor: ew-resize;
-        touch-action: none;
-      }
-      #legend .bar.error i {
-        position: absolute;
-        top: -2px;
-        bottom: -2px;
-        width: 2px;
-        margin-left: -1px;
-        background: var(--text);
-        border-radius: 1px;
       }
       /* the scene locks while a reference is shown: the shapes and the panels below the scene list are frozen */
       body.locked #left section:not(#tools):not(:first-child) {
@@ -465,56 +96,12 @@
         width: 0;
         background: var(--accent);
       }
-
-      /* help + perf overlays (inside the canvas area) */
-      #help {
-        position: absolute;
-        right: 12px;
-        bottom: 12px;
-        z-index: 20;
-        background: rgba(12, 12, 12, 0.94);
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        padding: 10px 12px;
-        display: none;
-        min-width: 230px;
-        font-size: 11px;
-        line-height: 1.75;
-      }
-      #help.open {
-        display: block;
-      }
-      #help .row {
-        display: flex;
-        justify-content: space-between;
-        gap: 16px;
-      }
-      #help .row span:last-child {
-        color: var(--dim);
-      }
-      #perf-graph {
+      /* the GPU profile */
+      .gpu-profiler {
         position: absolute;
         top: 8px;
         left: 8px;
         z-index: 20;
-        background: rgba(0, 0, 0, 0.8);
-        border-radius: 6px;
-        display: none;
-        flex-direction: column;
-        font-family: var(--mono);
-        font-size: 9px;
-        color: rgba(255, 255, 255, 0.5);
-        pointer-events: none;
-        overflow: hidden;
-      }
-      #perf-graph.open {
-        display: flex;
-      }
-      #perf-graph .perf-stats {
-        display: flex;
-        gap: 12px;
-        padding: 6px 8px 4px;
-        font-size: 10px;
       }
     </style>
   </head>
@@ -528,7 +115,7 @@
         <div id="scene-params"></div>
       </section>
       <section id="pen">
-        <h2><span id="pen-title">pen</span> <small id="pen-sub">draw on the canvas</small></h2>
+        <h2><span id="pen-title">pen</span> <small id="pen-sub"></small></h2>
         <div id="swatches"><input type="color" id="custom-color" value="#cccccc" title="custom colour" /></div>
         <div class="field" style="margin-top: 10px">
           <div class="label"><span>opacity</span><span class="val" id="v-opacity"></span></div>
@@ -539,21 +126,11 @@
           <input id="p-albedo" type="range" min="0" max="1" step="0.01" />
         </div>
         <div id="size-field"></div>
-        <div class="hint">opacity 0 = volumetric light · click a shape to edit it</div>
       </section>
     </aside>
 
     <div id="canvas-area">
       <div id="hrc"></div>
-      <div id="shapes"></div>
-      <div id="perf-graph">
-        <div class="perf-stats">
-          <span id="perf-fps" style="color: rgba(255, 255, 255, 0.7)"></span>
-          <span id="perf-cpu-val" style="color: rgba(100, 200, 255, 0.9)"></span>
-          <span id="perf-gpu-val" style="color: rgba(255, 150, 80, 0.9)"></span>
-        </div>
-        <canvas id="perf-canvas"></canvas>
-      </div>
       <div id="help"></div>
     </div>
 
@@ -568,7 +145,7 @@
         <div id="legend"></div>
       </section>
       <section id="tools">
-        <span id="fps" title="toggle perf graph" style="cursor: pointer"></span>
+        <span id="fps" title="GPU profile" style="cursor: pointer"></span>
         <input id="scene-file" type="file" accept=".png" style="display: none" />
         <button id="load-btn" title="load a square scene PNG">load</button>
         <button id="save-btn" title="save the scene as PNG">save</button>
@@ -578,89 +155,23 @@
     </aside>
 
     <script type="module">
-      import { ShapeEditor } from '../_shared/shape-editor';
       import { HRC, SCENE_SPAN } from './hrc';
+      import { EXPOSURE, EXPOSURE_CONTROL, BANDED_LEGEND, MAP_CONTROL, MAP_INDEX } from '../_shared/display';
       import { scenesFor, REFERENCE_CELLS } from '../_shared/scenes';
+      import { $, el, createControls, writeControls, readControls, sceneFromURL, replaceURL } from '../_shared/ui';
+      import { penPointer, PEN_SIZES, nextPenSize } from '../_shared/scene-panel';
 
-      const $ = (id) => document.getElementById(id);
       const hrc = new HRC($('hrc'), { pixelPerfect: 256, probeCount: 256, exposure: 1 });
-      const editor = new ShapeEditor($('shapes'), hrc.shapes, () => {
-        const r = squareRect();
-        return { left: r.left, top: r.top, size: r.width };
-      }, SCENE_SPAN);
-      const el = (tag, props = {}, ...children) => {
-        const e = Object.assign(document.createElement(tag), props);
-        e.append(...children);
-        return e;
-      };
 
       // ════════════════════════════════════════════════════════════════════
       // Controls: a toggle is an independent on/off; a segmented control picks one of several.
       // Each spec: { label, get(), set(v), enabled?(), key?, title?, url?: [name, default] }.
       // refresh() re-reads every control from the element, so keyboard shortcuts and URL loads stay in sync.
       // ════════════════════════════════════════════════════════════════════
-      const controls = [];
+      const { controls, toggle, segmented, slider, syncControls } = createControls(() => changed());
       const prop = (name) => ({ get: () => hrc[name], set: (v) => (hrc[name] = v) });
-
-      function toggle(parent, spec) {
-        const sw = el('span', { className: 'sw' });
-        const b = el('button', { className: 'toggle', title: spec.title ?? '' }, sw, el('span', { className: 'name', textContent: spec.label }));
-        if (spec.key) b.append(el('kbd', { textContent: spec.key }));
-        b.addEventListener('click', () => {
-          spec.set(!spec.get());
-          changed();
-        });
-        const wrap = el('div', { className: 'field' }, b);
-        parent.append(wrap);
-        controls.push({ spec, sync: () => b.classList.toggle('on', !!spec.get()), wrap });
-      }
-
-      function segmented(parent, spec) {
-        const seg = el('div', { className: 'seg' + (spec.cols ? ' wrap' : '') });
-        if (spec.cols) seg.style.setProperty('--cols', spec.cols);
-        const buttons = spec.options.map(([value, text, title]) => {
-          const b = el('button', { textContent: text, title: title ?? text });
-          b.addEventListener('click', () => {
-            spec.set(value);
-            changed();
-          });
-          seg.append(b);
-          return [value, b];
-        });
-        let wrap = seg;
-        if (spec.label) {
-          const label = el('div', { className: 'label' }, el('span', { textContent: spec.label }));
-          if (spec.key) label.append(el('kbd', { textContent: spec.key }));
-          wrap = el('div', { className: 'field', title: spec.title ?? '' }, label, seg);
-        }
-        parent.append(wrap);
-        controls.push({ spec, sync: () => buttons.forEach(([v, b]) => b.classList.toggle('on', v === spec.get())), wrap });
-      }
-
-      function slider(parent, spec) {
-        const val = el('span', { className: 'val' });
-        const input = el('input', { type: 'range', min: spec.min, max: spec.max, step: spec.step });
-        input.addEventListener('input', () => {
-          spec.set(Number(input.value));
-          changed();
-        });
-        const wrap = el('div', { className: 'field', title: spec.title ?? '' }, el('div', { className: 'label' }, el('span', { textContent: spec.label }), val), input);
-        parent.append(wrap);
-        controls.push({
-          spec,
-          sync: () => {
-            input.value = spec.get();
-            val.textContent = spec.format ? spec.format(spec.get()) : spec.get();
-          },
-          wrap,
-        });
-      }
-
       function refresh() {
-        for (const c of controls) {
-          c.sync();
-          if (c.spec.enabled) c.wrap.classList.toggle('disabled', !c.spec.enabled());
-        }
+        syncControls();
         renderLegend();
       }
       function changed() {
@@ -669,11 +180,8 @@
       }
 
       // ════════════════════════════════════════════════════════════════════
-      // Scenes: a registry. Coordinates are scene units with the origin at the square's centre and
-      // 1024 units across the square (1 unit = 1 probe at N = 1024), independent of the window size.
-      //   scene(group, name, build)   build(ctx) with ctx.add(x, y, w, h, colour, opts), ctx.shapes([...]),
-      //                               ctx.move(shape, x, y)
-      // To add a generator, push another scene() call; it appears in the list and the URL by id.
+      // Scenes: scene(group, name, build), build(ctx) with ctx.add(x, y, w, h, colour, opts), ctx.shapes([...]) and
+      // ctx.move(shape, x, y). Scene units: origin at the square's centre, 1024 across (1 unit = 1 probe at N = 1024).
       // ════════════════════════════════════════════════════════════════════
       const presets = [
         { name: 'Eraser', css: null, rgb: [0, 0, 0] },
@@ -731,8 +239,8 @@
         }, s.N);
       }
 
-      // ── Scenes only HRC can show: see-through lights, coloured media, bounces, animation ── shapes are
-      // [x, y, w, h, colourIndex, opts?] (top-left, scene units)
+      // ── Scenes with see-through lights, coloured media and bounces ──
+      // shapes are [x, y, w, h, colourIndex, opts?] (top-left, scene units)
       const V0 = { opacity: 0 }; // volumetric light: the ratio's light model
       const PINHOLE = [
         [-200, -84, 16, 24, 2], [-200, -60, 16, 24, 3], [-200, -36, 16, 24, 4], [-200, -12, 16, 24, 5],
@@ -946,19 +454,18 @@
         }
         syncPen();
       });
-      const PEN_SIZES = [1, 2, 4, 8, 16, 32]; // pixels of the N × N grid
       function setPenSize(v) {
         pen.size = v;
         hrc.setMouseLightRadius(pen.size / 2);
         syncPen();
         refresh();
       }
-      const stepPenSize = (d) => setPenSize(PEN_SIZES[Math.max(0, Math.min(PEN_SIZES.length - 1, PEN_SIZES.indexOf(pen.size) + d))] ?? 8);
+      const stepPenSize = (d) => setPenSize(nextPenSize(pen.size, d, 8));
 
       function syncPen() {
         const shape = selectedShape;
         $('pen-title').textContent = shape ? 'shape' : 'pen';
-        $('pen-sub').textContent = shape ? 'selected · ⌫ deletes' : 'draw on the canvas';
+        $('pen-sub').textContent = shape ? 'selected · ⌫ deletes' : '';
         $('size-field').style.display = shape ? 'none' : '';
         let color, opacity, albedo;
         if (shape) {
@@ -979,11 +486,10 @@
         hrc.setMouseLightColor(r, g, b);
         hrc.setMouseLightMaterial(off ? 0 : pen.opacity, off ? 0 : pen.albedo);
       }
-      const selectShape = (shape) => editor.select(shape);
-      editor.onSelect = (shape) => {
+      function selectShape(shape) {
         selectedShape = shape;
         syncPen();
-      };
+      }
 
       // ════════════════════════════════════════════════════════════════════
       // Panels
@@ -994,7 +500,7 @@
         hrc.probeCount = n;
         hrc.pixelPerfect = n;
       }
-      segmented($('scene-params'), { label: 'probes (N × N square, one per pixel)', title: 'tests set their own', options: PROBES.map((n) => [n, String(n)]), get: () => hrc.pixelPerfect, set: setProbes, enabled: () => !scenes[currentScene].N, url: ['probes', 256] });
+      segmented($('scene-params'), { label: 'probes', title: 'tests set their own', options: PROBES.map((n) => [n, String(n)]), get: () => hrc.pixelPerfect, set: setProbes, enabled: () => !scenes[currentScene].N, url: ['probes', 256] });
       segmented($('scene-params'), {
         label: 'sky',
         cols: 4,
@@ -1018,11 +524,17 @@
         },
         url: ['ratio', false],
       });
-      toggle(F, { label: 'shifted read', key: 'p', title: 'merge reads each ray kappa/2 rows toward the nearest odd ray (parityRead)', ...prop('parityRead'), url: ['parity', false] });
-      toggle(F, { label: 'equal footprints', key: 'e', title: "even rays' emission blurred to the odd rays' lateral variance, quadrant edges drained (equalise)", ...prop('equalise'), url: ['equal', false] });
+      toggle(F, { label: 'shifted read', key: 'p', title: 'the merge reads each ray kappa/2 rows toward the nearest odd ray (parityRead)', ...prop('parityRead'), url: ['parity', false] });
+      toggle(F, { label: 'equal footprints', key: 'e', title: 'even rays blurred across slices to match the odd rays, quadrant edges drained (equalise)', ...prop('equalise'), url: ['equal', false] });
+      toggle(F, {
+        label: 'length correction',
+        title: "odd rays take the straight ray's length, removing their brightening of volumetrics (lengthCorrection)",
+        ...prop('lengthCorrection'),
+        url: ['length', false],
+      });
       segmented(F, {
         label: 'free field',
-        title: 'ratio free field: FFT convolution (exact) or direct sum over emitters (validation)',
+        title: "the ratio's free field: FFT convolution, or a direct sum over emitters as a check",
         options: [['fft', 'FFT'], ['direct', 'direct']],
         ...prop('freeMethod'),
         enabled: () => hrc.ratio,
@@ -1030,24 +542,42 @@
       });
       segmented(F, {
         label: 'colour resolution',
-        title: 'chroma cascade resolution relative to the probes (luminance stays full); without the ratio only',
+        title: 'colour cascade resolution relative to the probes; luminance stays full',
         options: [[1, 'full'], [0.5, '½'], [0.25, '¼'], [0.125, '⅛']],
         ...prop('colorScale'),
         enabled: () => !hrc.ratio,
         url: ['color', 1],
       });
+      // memory and pass savings on the default cascade
+      toggle(F, {
+        label: 'lean storage',
+        title: 'only odd levels keep their rays, the rest are rebuilt in registers: about half the bytes, output within f16 rounding (lean)',
+        ...prop('lean'),
+        enabled: () => !hrc.ratio && !hrc.parityRead && !hrc.equalise,
+        url: ['lean', false],
+      });
+      toggle(F, {
+        label: 'exact rounding',
+        title: 'rebuilt rays are rounded through f16 as if stored, so the output equals the default (leanExact)',
+        ...prop('leanExact'),
+        enabled: () => hrc.lean,
+        url: ['leanexact', false],
+      });
+      toggle(F, {
+        label: 'one compute pass',
+        title: "all of a frame's cascade dispatches in one compute pass instead of twelve; same output (singlePass)",
+        ...prop('singlePass'),
+        url: ['onepass', false],
+      });
 
-      // display map: tonemap / banded / false colour (one of)
-      const mapGet = () => (hrc.banded ? 'banded' : hrc.falseColor ? 'fc' : 'tone');
-      const mapSet = (m) => {
-        hrc.banded = m === 'banded';
-        hrc.falseColor = m === 'fc';
-      };
-      let lastMap = 'tone'; // what b returns to from the banded view
+      // the display map (shared display.ts): tone map or log₂; the exposure in stops from E = 1
+      const mapGet = () => (hrc.map ? 'banded' : 'tone');
+      const mapSet = (m) => (hrc.map = MAP_INDEX[m]);
+      let stops = 0;
       const O = $('output');
       segmented(O, {
         label: 'reference',
-        title: 'a reference of the same scene, or HRC\'s difference from it; none selected shows HRC. The scene locks while one is shown (no edits, animation paused, cursor light off), and its exact reference is computed once per scene (bounces off); the path tracer is Monte Carlo',
+        title: "a reference of the same scene, or HRC's error against it; the scene locks while one is shown",
         cols: 2,
         options: [[1, 'path trace'], [3, 'exact'], [2, 'Δ path trace', 'error against the path trace'], [4, 'Δ exact', 'error against the exact reference']],
         get: () => hrc.debugMode,
@@ -1055,17 +585,6 @@
         url: ['debug', 0],
       });
       O.lastElementChild.classList.add('reference');
-      segmented(O, {
-        label: 'reference directions per pixel',
-        title: 'directions per pixel of the exact reference',
-        options: [[16, '16 N'], [64, '64 N']],
-        get: () => exactDensity,
-        set: (v) => {
-          exactDensity = v;
-          if (locked) startExact();
-        },
-        url: ['refdir', 64],
-      });
       const refStatus = el('div', { className: 'hint', id: 'ref-status' });
       const refBar = el('div', { className: 'progress' }, el('div'));
       O.append(el('div', { className: 'field' }, refBar, refStatus));
@@ -1073,26 +592,17 @@
         label: 'view',
         title: 'what the ratio pipeline writes to the fluence (ratioView)',
         cols: 3,
-        options: [[0, 'result'], [1, 'free field'], [2, 'visibility'], [3, 'plain HRC'], [4, 'casc. free', 'cascade free estimate']],
+        options: [[0, 'result'], [1, 'free field'], [2, 'visibility'], [3, 'HRC alone'], [4, 'casc. free', 'cascade free estimate']],
         ...prop('ratioView'),
         enabled: () => hrc.ratio,
         url: ['rview', 0],
       });
-      segmented(O, { label: 'map', key: 'b', options: [['tone', 'tonemap'], ['banded', 'banded'], ['fc', 'false colour']], get: mapGet, set: mapSet, url: ['map', 'tone'] });
-      slider(O, {
-        label: 'exposure',
-        title: 'tonemap exposure; in the banded view the band scale (bands of log10(L · exposure))',
-        min: 0.1,
-        max: 10,
-        step: 0.1,
-        ...prop('exposure'),
-        format: (v) => v.toFixed(1),
-        url: ['exposure', 1],
-      });
+      segmented(O, { ...MAP_CONTROL, get: mapGet, set: mapSet, url: ['map', 'tone'] });
+      slider(O, { ...EXPOSURE_CONTROL, get: () => stops, set: (v) => ((stops = v), (hrc.exposure = EXPOSURE * 2 ** v)), format: (v) => (v > 0 ? `+${v}` : String(v)), url: ['stops', 0] });
 
       // ── Scene lock + exact reference ──
       let locked = false, errorClip = 0;   // errorClip: the error legend's clip, an exponent (0: off)
-      let exactDensity = 64;
+      const exactDensity = 32;   // the exact reference's directions per pixel, per pixel of N (the scheme pages' EXACT_DENSITY)
       function startExact() {
         hrc.ready   // a reference picked from the URL arrives before the renderer is ready
           .then(() => hrc.exactEnsure({ m: exactDensity * hrc.pixelPerfect }))
@@ -1100,7 +610,6 @@
       }
       function setLocked(v) {
         locked = v;
-        editor.locked = v;
         document.body.classList.toggle('locked', locked);
         syncMouse();
         if (locked) {
@@ -1124,20 +633,9 @@
           : `${(st.fraction * 100).toFixed(1)} % · expected ${fmtTime(st.totalMs)} total · ${fmtTime(st.etaMs)} left`;
       }
 
-      // ── Legend (viridis, same samples as the blit shader) ──
-      const VIRIDIS = [
-        [0.267, 0.0049, 0.3294], [0.2823, 0.095, 0.4173], [0.2788, 0.1755, 0.4834], [0.259, 0.2515, 0.5247],
-        [0.2297, 0.3224, 0.5457], [0.1994, 0.3876, 0.5546], [0.1727, 0.4488, 0.5579], [0.149, 0.5081, 0.5573],
-        [0.1276, 0.5669, 0.5506], [0.1206, 0.6258, 0.5335], [0.1579, 0.6838, 0.5017], [0.2461, 0.7389, 0.452],
-        [0.3692, 0.7889, 0.3829], [0.516, 0.8312, 0.2943], [0.6785, 0.8637, 0.1895], [0.8456, 0.8873, 0.0997],
-        [0.9932, 0.9062, 0.1439],
-      ];
-      const viridis = (t) => {
-        const s = Math.max(0, Math.min(1, t)) * 16, i = Math.min(Math.floor(s), 15), f = s - i;
-        return `rgb(${VIRIDIS[i].map((a, k) => Math.round((a + (VIRIDIS[i + 1][k] - a) * f) * 255)).join(',')})`;
-      };
-      // the error legend: the draw shader's errorColour, −1 through 0 (at most 1e-5) to +1, ticks at the exponents. Dragging the
-      // bar sets errorClip, symmetric about 0: errors of at least 10^errorClip show magenta (at the ends, 0, nothing does)
+      // ── Legends ──
+      // the error legend: the blit shader's error colours, −1 through 0 (at most 1e-5) to +1. Dragging the bar sets errorClip,
+      // the same on both sides of 0: errors of at least 10^errorClip show magenta (at the ends, 0, nothing does)
       const sup = (s) => String(s).replace(/[-.0-9]/g, (c) => ({ '-': '⁻', '.': '·' })[c] ?? '⁰¹²³⁴⁵⁶⁷⁸⁹'[c]);
       function errorLegend(L, scheme, onClip) {
         const BRIGHTER = [[1, 1, 1], [0.957, 0.647, 0.51], [0.839, 0.376, 0.302], [0.404, 0, 0.122]];
@@ -1164,7 +662,7 @@
           const d = (errorClip + 5) / 5;
           marks[0].style.left = `${50 - 50 * d}%`;
           marks[1].style.left = `${50 + 50 * d}%`;
-          caption.textContent = `error: (${scheme} − reference) / reference in L · exposure (reference floored at 0.01), log scale, 10 bands per decade; white at 10⁻⁵ or less, reds brighter, blues darker` +
+          caption.textContent = `error: (${scheme} − reference) / reference (reference floored at 0.01), log scale, 10 bands per decade; white at 10⁻⁵ or less, red brighter, blue darker` +
             (errorClip < 0 ? `; magenta at least 10${sup(errorClip)}` : '');
         };
         const set = (e) => {
@@ -1185,45 +683,23 @@
           L.innerHTML = '';
           return errorLegend(L, 'HRC', () => (hrc.errorClip = errorClip < 0 ? 10 ** errorClip : 1e9));
         }
-        const map = mapGet();
-        const fc = map === 'fc';
-        if (map === 'tone' && !fc) {
-          L.innerHTML = '';
-          return;
-        }
-        let bar, ticks, caption;
-        if (map === 'banded') {
-          const stops = [];
-          for (let i = 0; i < 22; i++) stops.push(`${viridis(i / 21)} ${(i / 22) * 100}% ${((i + 1) / 22) * 100}%`);
-          bar = `linear-gradient(to right, ${stops.join(',')})`;
-          ticks = ['−2.2', '−2', '−1.5', '−1', '−0.5', '0'];
-          caption = 'log10(L · exposure), 10 bands per decade; opaque black, emitters red';
-        } else {
-          bar = `linear-gradient(to right, ${Array.from({ length: 17 }, (_, i) => viridis(i / 16)).join(',')})`;
-          ticks = ['0', '.0007', '.006', '.046', '.36', '1+'];
-          caption = 'fluence (log scale, absolute)';
-        }
         L.innerHTML = '';
+        if (mapGet() !== 'banded') return;
         const b = el('div', { className: 'bar' });
-        b.style.background = bar;
-        L.append(b, el('div', { className: 'ticks' }, ...ticks.map((t) => el('span', { textContent: t }))), el('div', { className: 'caption', textContent: caption }));
-        // banded ticks sit at band edges −2.2 … 0: position them proportionally
-        if (map === 'banded') {
-          const tk = L.querySelector('.ticks');
-          tk.style.position = 'relative';
-          tk.style.height = '12px';
-          [...tk.children].forEach((s) => {
-            const v = Number(s.textContent.replace('−', '-'));
-            Object.assign(s.style, { position: 'absolute', left: `${((v + 2.2) / 2.2) * 100}%`, transform: `translateX(${v === 0 ? '-100%' : v === -2.2 ? '0' : '-50%'})` });
-          });
+        b.style.background = BANDED_LEGEND.background;
+        const ticks = el('div', { className: 'ticks' });
+        Object.assign(ticks.style, { position: 'relative', height: '12px' });
+        for (const [t, x] of BANDED_LEGEND.ticks) {
+          const s = el('span', { textContent: t });
+          Object.assign(s.style, { position: 'absolute', left: `${x}%`, transform: `translateX(${x === 0 ? '0' : x === 100 ? '-100%' : '-50%'})` });
+          ticks.append(s);
         }
+        L.append(b, ticks, el('div', { className: 'caption', textContent: BANDED_LEGEND.caption }));
       }
 
       // ════════════════════════════════════════════════════════════════════
       // URL state: every control with url: [name, default] round-trips; plus scene, sky, perf.
       // ════════════════════════════════════════════════════════════════════
-      const enc = (v) => (v === true ? '1' : v === false ? '0' : String(v));
-      const dec = (s, def) => (typeof def === 'boolean' ? s === '1' : typeof def === 'number' ? Number(s) : s);
       let perfOpen = false;
       let urlReady = false;
       function syncURL() {
@@ -1231,32 +707,21 @@
         const p = new URLSearchParams();
         if (currentScene !== 0) p.set('scene', scenes[currentScene].id);
         if (sky !== 'none') p.set('sky', sky);
-        for (const { spec } of controls) {
-          if (!spec.url) continue;
-          const [name, def] = spec.url, v = name === 'probes' && freeN ? freeN : spec.get();   // a test's resolution is not saved
-          if (v !== def) p.set(name, typeof v === 'number' && !Number.isInteger(v) ? String(+v.toFixed(3)) : enc(v));
-        }
+        writeControls(p, controls, (name, v) => (name === 'probes' && freeN ? freeN : v));   // a test's resolution is not saved
         if (perfOpen) p.set('perf', '1');
-        const qs = p.toString();
-        history.replaceState(null, '', qs ? '?' + qs : location.pathname);
+        replaceURL(p);
       }
       function loadURL() {
         const p = new URLSearchParams(location.search);
-        for (const { spec } of controls) {
-          if (!spec.url) continue;
-          const [name, def] = spec.url;
-          spec.set(p.has(name) ? dec(p.get(name), def) : def);
-        }
+        readControls(p, controls);
         if (!PROBES.includes(hrc.pixelPerfect)) setProbes(PROBES.reduce((b, n) => (Math.abs(n - hrc.pixelPerfect) < Math.abs(b - hrc.pixelPerfect) ? n : b)));
         setSky(p.get('sky') ?? 'none');
         perfOpen = p.get('perf') === '1';
-        const s = p.get('scene') ?? '0';
-        const byId = scenes.findIndex((x) => x.id === s);
-        return byId >= 0 ? byId : Number.isFinite(Number(s)) ? Number(s) : 0;
+        return sceneFromURL(p, scenes);
       }
 
       // ════════════════════════════════════════════════════════════════════
-      // Tools: fps / perf, load / save, screenshot, help
+      // Tools: fps / profile, load / save, screenshot, help
       // ════════════════════════════════════════════════════════════════════
       $('load-btn').addEventListener('click', () => $('scene-file').click());
       $('save-btn').addEventListener('click', () => hrc.saveScenePNG(`scene-${Date.now()}.png`));
@@ -1282,12 +747,12 @@
         ['r', 'ratio'],
         ['p', 'shifted read'],
         ['e', 'equal footprints'],
-        ['b', 'banded view'],
+        ['b', 'map: tone map / banded'],
         ['n', 'new shape'],
         ['⌫', 'delete selected shape'],
         ['c', 'clear drawing'],
         ['s', 'screenshot'],
-        ['t', 'GPU pass timings (console)'],
+        ['t', 'GPU profile table (console; profile open)'],
         ['f', 'fullscreen'],
         ['?', 'this help'],
       ];
@@ -1299,85 +764,30 @@
       };
       $('help-btn').addEventListener('click', () => toggleHelp());
 
-      // ── FPS + perf graph ──
-      const fpsEl = $('fps'), perfGraph = $('perf-graph'), perfCanvas = $('perf-canvas'), perfCtx = perfCanvas.getContext('2d');
-      const DPR = window.devicePixelRatio || 1;
-      const GW = 340, GH = 130, ML = 30, PW = GW - ML, PH = GH;
-      perfCanvas.width = GW * DPR;
-      perfCanvas.height = GH * DPR;
-      perfCanvas.style.width = GW + 'px';
-      perfCanvas.style.height = GH + 'px';
-      const cpuSamples = new Float32Array(PW), gpuSamples = new Float32Array(PW);
-      let sampleIdx = 0, scaleMax = 20, avgCpu = 0, avgGpu = 0, avgFps = 0;
+      // ── FPS; clicking it opens the GPU profile (site/_shared/profiler.ts) ──
+      const fpsEl = $('fps');
+      let avgFps = 0, avgGpu = 0;
+      const showPerf = () => {
+        if (hrc.profiler) hrc.profiler.enabled = perfOpen;
+      };
+      hrc.ready.then(() => {
+        $('canvas-area').append(hrc.profiler.panel());
+        showPerf();
+      });
       fpsEl.addEventListener('click', () => {
         perfOpen = !perfOpen;
-        perfGraph.classList.toggle('open', perfOpen);
+        showPerf();
         syncURL();
       });
-      const TICKS = [2, 4, 8, 16, 32, 64];
-      function drawPerfGraph() {
-        const ctx = perfCtx;
-        ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-        ctx.clearRect(0, 0, GW, GH);
-        let dataMax = 1;
-        for (let i = 0; i < PW; i++) dataMax = Math.max(dataMax, cpuSamples[i] + gpuSamples[i]);
-        const ceilTick = TICKS.find((t) => t >= dataMax) ?? TICKS[TICKS.length - 1];
-        const target = Math.max(ceilTick * 1.1, 8);
-        if (target > scaleMax) scaleMax = target;
-        else scaleMax += (target - scaleMax) * 0.03;
-        const sqrtMax = Math.sqrt(scaleMax);
-        const toY = (ms) => PH - (Math.sqrt(Math.max(0, ms)) / sqrtMax) * PH;
-        ctx.fillStyle = 'rgba(255,255,255,0.03)';
-        ctx.fillRect(ML, 0, PW, PH);
-        ctx.font = '9px monospace';
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'middle';
-        for (const ms of TICKS) {
-          if (ms > scaleMax * 0.98) continue;
-          const y = toY(ms);
-          if (y < 6 || y > PH - 4) continue;
-          const budget = ms === 16 || ms === 32;
-          ctx.strokeStyle = budget ? 'rgba(100,255,100,0.2)' : 'rgba(255,255,255,0.06)';
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(ML, y);
-          ctx.lineTo(GW, y);
-          ctx.stroke();
-          ctx.fillStyle = budget ? 'rgba(100,255,100,0.5)' : 'rgba(255,255,255,0.25)';
-          ctx.fillText(`${ms}`, ML - 3, y);
-        }
-        const line = (samples, color) => {
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 1.2;
-          ctx.beginPath();
-          for (let i = 0; i < PW; i++) {
-            const y = Math.max(0, Math.min(PH, toY(samples[(sampleIdx + i) % PW])));
-            i === 0 ? ctx.moveTo(ML + i, y) : ctx.lineTo(ML + i, y);
-          }
-          ctx.stroke();
-        };
-        line(cpuSamples, 'rgba(100,200,255,0.85)');
-        line(gpuSamples, 'rgba(255,150,80,0.85)');
-      }
       let lastFpsUpdate = 0;
       (function tick(now) {
-        const jsMs = hrc.jsTimeMs, gpuMs = hrc.gpuTimeMs, fps = hrc.fps;
-        avgCpu += (jsMs - avgCpu) * 0.05;
-        if (gpuMs > 0) avgGpu += (gpuMs - avgGpu) * 0.05;
+        const gpuMs = perfOpen ? hrc.gpuTimeMs : 0, fps = hrc.fps;
+        avgGpu = gpuMs > 0 ? avgGpu + (gpuMs - avgGpu) * 0.05 : 0;
         if (fps > 0) avgFps += (fps - avgFps) * 0.05;
-        cpuSamples[sampleIdx] = jsMs;
-        gpuSamples[sampleIdx] = gpuMs;
-        sampleIdx = (sampleIdx + 1) % PW;
         if (now - lastFpsUpdate > 250) {
           lastFpsUpdate = now;
           renderRefStatus();
           fpsEl.textContent = `${Math.round(avgFps)} fps${avgGpu > 0 ? ` · ${avgGpu.toFixed(1)} ms` : ''}`;
-        }
-        if (perfOpen) {
-          drawPerfGraph();
-          $('perf-fps').textContent = `${Math.round(avgFps)} fps`;
-          $('perf-cpu-val').textContent = `js ${avgCpu.toFixed(1)}ms`;
-          $('perf-gpu-val').textContent = avgGpu > 0 ? `gpu ${avgGpu.toFixed(1)}ms` : 'gpu N/A';
         }
         requestAnimationFrame(tick);
       })(0);
@@ -1412,13 +822,7 @@
           }
           case 'p': case 'P': flip('parityRead'); break;
           case 'e': case 'E': flip('equalise'); break;
-          case 'b': case 'B': {
-            const m = mapGet();
-            if (m !== 'banded') lastMap = m;
-            mapSet(m === 'banded' ? lastMap : 'banded');
-            changed();
-            break;
-          }
+          case 'b': case 'B': mapSet(mapGet() === 'tone' ? 'banded' : 'tone'); changed(); break;
           case '?': toggleHelp(); break;
           case 'Escape': toggleHelp(false); break;
           case '=': case '+': if (!locked) stepPenSize(1); break;
@@ -1430,19 +834,13 @@
             else document.documentElement.requestFullscreen();
             break;
           case 't': case 'T': {
-            const timings = hrc.gpuPassTimings;
-            if (!timings.length) {
-              console.log('No GPU pass timings available');
+            if (!hrc.profiler.enabled) {
+              console.log('GPU profile is off: click the fps to open it');
               break;
             }
-            const groups = {};
-            timings.forEach(({ label, ms }) => {
-              const type = label.includes('.') ? label.split('.')[1].replace(/\d+$/, '') : label;
-              groups[type] = (groups[type] || 0) + ms;
-            });
-            console.log(timings.map(({ label, ms }) => ({ pass: label, ms: ms.toFixed(3) })));
-            console.table(Object.entries(groups).map(([type, ms]) => ({ type, ms: ms.toFixed(2) })));
-            console.log(`Total: ${timings.reduce((s, x) => s + x.ms, 0).toFixed(2)}ms`);
+            const st = hrc.profiler.stats();
+            console.table(st.passes.map(({ label, ms, min, count }) => ({ pass: label, ms: ms.toFixed(3), min: min.toFixed(3), count })));
+            console.log(`GPU ${st.gpuMs.toFixed(2)} ms, span ${st.spanMs.toFixed(2)} ms, CPU encode ${st.cpuMs.toFixed(2)} ms (${st.frames} frames)`);
             break;
           }
           case 'ArrowRight': switchScene(currentScene + 1); changed(); break;
@@ -1456,7 +854,7 @@
           }
           case 'Delete':
           case 'Backspace':
-            if (!locked && selectedShape) editor.remove(selectedShape);
+            if (!locked && selectedShape) (hrc.shapes.splice(hrc.shapes.indexOf(selectedShape), 1), selectShape(null));
             break;
           default:
             handled = false;
@@ -1468,52 +866,42 @@
       });
 
       // ════════════════════════════════════════════════════════════════════
-      // Drawing (pointer on the canvas area, outside shapes)
+      // Pen on the canvas (site/_shared/scene-panel.ts): drag a shape, or draw / erase on HRC's paint layer
       // ════════════════════════════════════════════════════════════════════
-      let drawing = false, lastX = 0, lastY = 0;
-      const eraserRadius = () => (pen.size / 2) * (squareRect().width / hrc.pixelPerfect); // screen px
-      document.addEventListener('pointerdown', (e) => {
-        if (locked || e.target.closest('aside') || e.target.closest('#help')) return;
-        if (editor.owns(e.target)) return;
+      const toClient = ([u, v]) => {
         const r = squareRect();
-        if (e.clientX < r.left || e.clientX > r.left + r.width || e.clientY < r.top || e.clientY > r.top + r.height) {
-          if (selectedShape) selectShape(null);
-          return;
-        }
-        if (selectedShape) {
-          selectShape(null);
-          e.preventDefault();
-          return;
-        }
-        drawing = true;
-        lastX = e.clientX;
-        lastY = e.clientY;
-        e.preventDefault();
-      });
-      document.addEventListener('pointermove', (e) => {
-        if (!drawing || e.buttons === 0) {
-          drawing = false;
-          return;
-        }
-        if (Math.hypot(e.clientX - lastX, e.clientY - lastY) >= 4) {
-          if (pen.eraser) hrc.eraseAt(e.clientX, e.clientY, eraserRadius());
-          else hrc.addLine(lastX, lastY, e.clientX, e.clientY, pen.color, pen.size, pen.opacity, pen.albedo);
-          lastX = e.clientX;
-          lastY = e.clientY;
-        }
-      });
-      document.addEventListener('pointerup', (e) => {
-        if (!drawing) return;
-        if (pen.eraser) hrc.eraseAt(e.clientX, e.clientY, eraserRadius());
-        else if (Math.abs(e.clientX - lastX) > 1 || Math.abs(e.clientY - lastY) > 1) hrc.addLine(lastX, lastY, e.clientX, e.clientY, pen.color, pen.size, pen.opacity, pen.albedo);
-        else hrc.addLine(lastX, lastY, lastX, lastY, pen.color, pen.size, pen.opacity, pen.albedo);
-        drawing = false;
+        return [r.left + (u / SCENE_SPAN + 0.5) * r.width, r.top + (v / SCENE_SPAN + 0.5) * r.height];
+      };
+      const eraserRadius = () => (pen.size / 2) * (squareRect().width / hrc.pixelPerfect); // screen px
+      hrc.ready.then(() =>
+        penPointer(hrc.canvas, {
+          span: SCENE_SPAN,
+          N: () => hrc.pixelPerfect,
+          locked: () => locked,
+          shapes: () => hrc.shapes,
+          rect: (s) => [s.x, s.y, s.width, s.height],
+          move: (s, x, y) => Object.assign(s, { x, y }),
+          select: selectShape,
+          eraser: () => pen.eraser,
+          size: () => pen.size,
+          paint: (a, b, _size, eraser) => {
+            const [x0, y0] = toClient(a), [x1, y1] = toClient(b);
+            if (eraser) hrc.eraseAt(x1, y1, eraserRadius());
+            else hrc.addLine(x0, y0, x1, y1, pen.color, pen.size, pen.opacity, pen.albedo);
+          },
+          cursor: () => {},   // HRC moves its own pen light
+          touch: () => {},   // HRC redraws every frame
+        }),
+      );
+      // a click beside the square deselects
+      $('canvas-area').addEventListener('pointerdown', (e) => {
+        if (e.target === $('canvas-area') && selectedShape) selectShape(null);
       });
 
       // ── Init ──
       const initScene = loadURL();
       urlReady = true;
-      perfGraph.classList.toggle('open', perfOpen);
+      showPerf();
       hrc.setMouseLightRadius(pen.size / 2);
       syncMouse();
       syncPen();

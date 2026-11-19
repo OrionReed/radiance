@@ -35,8 +35,10 @@
           errors.length = 0;
           const g = engine(N, options);
           const compile = await g.compileInfo();
+          const t0 = performance.now();
           const F = quadrants === 1 ? await g.solveQuadrant0(fromB64(E), fromB64(A)) : await g.solve(fromB64(E), fromB64(A));
-          return { fluence: toB64(F), compile, errors: [...errors], bytes: bytes(g) };
+          const ms = performance.now() - t0;
+          return { fluence: toB64(F), compile, errors: [...errors], bytes: bytes(g), ms };
         },
         // GPU time of the four quadrants' passes (no upload or readback): rounds of reps frames back to back, median ms per frame
         async time({ N, E, A, options = {}, reps = 10, rounds = 5 }) {

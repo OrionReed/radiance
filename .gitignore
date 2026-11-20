@@ -3,3 +3,11 @@ dist/
 .DS_Store
 __pycache__/
 *.pyc
+site/one-cone/
+site/reciprocal-hrc-lab/
+site/**/shadertoy/
+site/**/fragcoord*/
+site/_harness/*fragcoord*.html
+site/_harness/reciprocal-hrc-lab.html
+site/polygonal-dual/
+site/_harness/polygonal-dual.html

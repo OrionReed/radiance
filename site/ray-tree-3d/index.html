@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ray tree visualiser</title>
+    <meta name="description" content="Visualiser for cascade ray trees" />
+    <meta name="section" content="visualisations" />
+    <link rel="stylesheet" href="../_shared/page.css" />
+    <style>
+      #right {
+        border-left: 1px solid var(--line);
+      }
+      #view canvas {
+        display: block;
+      }
+      .plabel {
+        position: absolute;
+        top: 10px;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text);
+        background: rgba(14, 14, 14, 0.8);
+        border: 1px solid var(--line);
+        padding: 2px 8px;
+        border-radius: 4px;
+        pointer-events: none;
+        z-index: 1;
+      }
+      #busy {
+        position: absolute;
+        left: 10px;
+        bottom: 8px;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--faint);
+      }
+      #levels {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 2px;
+      }
+      #levels button {
+        font: inherit;
+        font-size: 11px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--text);
+        background: var(--ctl);
+        border: 0;
+        border-radius: 4px;
+        padding: 3px 6px;
+        cursor: pointer;
+      }
+      #levels button:hover {
+        background: var(--ctl-hover);
+      }
+      #levels button.off {
+        color: var(--faint);
+      }
+      #levels button.off i {
+        opacity: 0.2;
+      }
+      #levels i {
+        width: 10px;
+        height: 10px;
+        border-radius: 2px;
+        flex: none;
+      }
+      #levels .n {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--faint);
+      }
+      .readout {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        line-height: 1.5;
+        color: var(--dim);
+        white-space: pre-wrap;
+      }
+      .readout b {
+        color: var(--text);
+        font-weight: 600;
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 3px 12px;
+        margin-top: 8px;
+        font-size: 10.5px;
+        color: var(--faint);
+      }
+      .legend i {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        border-radius: 2px;
+        margin-right: 4px;
+        vertical-align: -1px;
+      }
+      #guide p {
+        margin: 0 0 7px;
+        font-size: 11.5px;
+        line-height: 1.5;
+        color: rgba(255, 255, 255, 0.7);
+      }
+      #guide b {
+        color: var(--text);
+        font-weight: 600;
+      }
+      textarea {
+        width: 100%;
+        height: 130px;
+        background: var(--ctl);
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        font: 10.5px/1.35 var(--mono);
+        padding: 6px;
+        resize: vertical;
+      }
+      select {
+        width: 100%;
+        background: var(--ctl);
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        font: inherit;
+        font-size: 11px;
+        padding: 3px 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <aside id="left"></aside>
+    <main id="canvas-area"><div id="view"></div><div id="busy"></div></main>
+    <aside id="right"></aside>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

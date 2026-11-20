@@ -31,7 +31,7 @@ function findPages(): Page[] {
 const escape = (s: string) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
 
 // Fills <!-- pages --> in site/index.html with a link per page that names no section, and <!-- pages NAME --> with the
-// pages whose <meta name="section"> is NAME.
+// pages whose <meta name="section"> is NAME. A <section> wrapping a list is dropped when that list has no pages.
 function pageIndex(): Plugin {
   return {
     name: 'page-index',
@@ -40,7 +40,12 @@ function pageIndex(): Plugin {
       handler(html, ctx) {
         if (resolve(ctx.filename) !== resolve(siteDir, 'index.html')) return html;
         const pages = findPages();
-        return html.replace(/<!-- pages(?: ([\w-]+))? -->/g, (_, section = '') => {
+        return html
+          .replace(/<section>[\s\S]*?<\/section>/g, (block) => {
+            const section = block.match(/<!-- pages ([\w-]+) -->/)?.[1];
+            return pages.some((p) => p.section === section) ? block : '';
+          })
+          .replace(/<!-- pages(?: ([\w-]+))? -->/g, (_, section = '') => {
           const items = pages
             .filter((p) => p.section === section)
             .map(

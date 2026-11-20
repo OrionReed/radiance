@@ -15,21 +15,42 @@ export interface ReciprocalScene {
   /** absorption per pixel of path length (∞ opaque; none: all 0). A pixel with absorption and emission is an emitting
    * medium; with emission and no absorption it is a light */
   absorption?: Float32Array;
+  /** with the normals option: unit normals (3 per pixel), z out of the plane (none: all (0, 0, 1)) */
+  normal?: Float32Array;
 }
 
 export interface Options {
   /** the Wu split: the merge gives an odd parent's far light to its two bent orders by its slope across rows, not ½ / ½
    * (off by default) */
   wuSplit?: boolean;
-  /** the coupling read: the light a first half hands to a bent parent's second half follows the first half's
-   * half-limited slope across rows (off by default) */
-  couplingRead?: boolean;
+  /** the coupling read: the light a first half hands to a bent parent's second half follows a half-limited slope of the
+   * first half's light (off by default): 'fan', across its fan at a fixed start (strength 0.53), or 'rows', across its
+   * start rows (0.1) */
+  couplingRead?: false | 'fan' | 'rows';
+  /** offscreen light from a producer on the GPU: outside the scene is free space, and the light entering it comes from
+   * the producer (off: dark and solid). Its WGSL defines `fn outsidePrepare(length: i32, row: i32, local: u32)`, run by
+   * each thread of a fill workgroup (FILL_THREADS) for one start row before a barrier, and
+   * `fn outsideValue(length: i32, block: i32, rise: i32, startRow: i32) -> vec3f`, the light entering the scene over the
+   * lines of the ray of that length and rise that starts at column 0 (block 0) and row startRow. It may read
+   * `params.frustum`, `N` and its buffers, bound at 20, 21, ... (each must be used). It runs every frame, in the solve,
+   * before each length's merge reads it. */
+  producer?: OutsideProducer;
+  /** shade each pixel's 12 directional bins with the normal map (upload's normal) and write the irradiance vector to
+   * vectorBuffer (off by default) */
+  normals?: boolean;
+}
+
+export interface OutsideProducer {
+  wgsl: string;
+  buffers: GPUBuffer[];
 }
 
 /** a half pixel's path-length factor in a 1-px ray of rise 0 and of rise ±1: the minimax line in |s| to √(1 + s²) */
 export const MEDIUM_LENGTH = [0.95509, 1.3693] as const;
 
 const WORKGROUP = 256;
+/** threads in a fill workgroup (a producer's outsidePrepare strides by it) */
+export const FILL_THREADS = WORKGROUP;
 const MERGE_THREADS = 65536; // a merge thread takes a run of rises, as long as the dispatch keeps about this many threads
 const MAX_GROUPS_X = 32768;
 const PARAM_STRIDE = 256; // uniform offsets must be multiples of 256
@@ -60,7 +81,40 @@ function coneTable(N: number) {
   return { offsets, weights: new Float32Array(weights) };
 }
 
-const common = (N: number) => /* wgsl */ `
+/** With a producer, block 0 of every length holds the outside's light (a fill writes it, before the merge reads it) and
+ * blocks ≥ 1 the merge's, at the scene's rows and at the pad rows the merge reads. Per level (length 2^level) and rise,
+ * the start rows read, traced up from the pixels pass: an even child reads its parents at its own row, an odd child
+ * rise + side rows on (parent rise 2 rise + side), the Wu split one row more each way. */
+export function outsideLayout(N: number) {
+  type Range = [number, number];
+  const widen = (r: Range, lo: number, hi: number) => ((r[0] = Math.min(r[0], lo)), (r[1] = Math.max(r[1], hi)));
+  const outside: Range[][] = [[[-1, N], [-1, N], [-1, N]]];
+  const merged: Range[][] = [[[-1, N], [-1, N], [-1, N]]]; // length 1: the pixels pass's 1-px rays
+  for (let length = 1; length < N; length *= 2) {
+    const parent = 2 * length, zero: Range[] = [], others: Range[] = [];
+    for (let i = 0; i < riseCount(parent); i++) (zero.push([Infinity, -Infinity]), others.push([Infinity, -Infinity]));
+    merged[merged.length - 1].forEach(([lo, hi], index) => {
+      const rise = index - length;
+      for (let side = -1; side <= 1; side++) {
+        const d = 2 * rise + side, shift = rise + side;
+        if (Math.abs(d) > parent) continue;
+        widen(others[d + parent], lo - 1, hi + 1);
+        widen(zero[d + parent], lo - shift - 1, hi - shift + 1);
+        widen(others[d + parent], lo - shift - 1, hi - shift + 1);
+      }
+    });
+    outside.push(zero.map(([lo, hi]) => (lo > hi ? [0, -1] : [lo, hi])));
+    merged.push(others.map(([lo, hi]) => [Math.min(0, lo), Math.max(N - 1, hi)]));
+  }
+  const pad = (ranges: Range[]) => Math.max(0, ...ranges.filter(([lo, hi]) => lo <= hi).flatMap(([lo, hi]) => [-lo, hi - N + 1]));
+  return outside.map((zero, level) => {
+    const length = 2 ** level, pad0 = pad(zero), pad1 = level === 0 ? 0 : pad(merged[level]);
+    // stored: block 0 at rows -pad0 ... N + pad0 - 1; blocks 1 ... (from length 2 to N / 2) at rows -pad1 ... N + pad1 - 1
+    const others = length > 1 && length < N ? (N / length - 1) * riseCount(length) * (N + 2 * pad1) : 0;
+    return { length, zero, merged: merged[level], pad0, pad1, cells: riseCount(length) * (N + 2 * pad0) + others };
+  });
+}
+const common = (N: number, free: boolean) => /* wgsl */ `
 const N: i32 = ${N};
 const CONE_OFFSETS = array<i32, ${Math.log2(N) + 1}>(${coneTable(N).offsets.join(', ')});
 // riseClass: where the scene's half pixels of rise-±1 1-px rays start
@@ -70,9 +124,9 @@ struct Params { length: i32, count: u32, frustum: i32, riseClass: u32 };
 
 fn threadIndex(id: vec3u, groups: vec3u) -> u32 { return id.x + id.y * groups.x * ${WORKGROUP}u; }
 
-// frustum: axis frustum / 2, mirrored along the axis if odd. Off the rows: solid and dark.
+// frustum: axis frustum / 2, mirrored along the axis if odd. Off the rows: ${free ? 'free' : 'solid and dark'}.
 fn pixelAt(column: i32, row: i32, rise: i32) -> vec4f {
-  if (row < 0 || row >= N) { return vec4f(0.0); }
+  if (row < 0 || row >= N) { return vec4f(${free ? '0.0, 0.0, 0.0, 1.0' : '0.0'}); }
   let axis = params.frustum >> 1; let mirrored = (params.frustum & 1) == 1;
   return scene[select(0u, params.riseClass, rise != 0) + u32((axis * N + select(column, N - 1 - column, mirrored)) * N + row)];
 }
@@ -127,10 +181,10 @@ fn storeMerged(slot: u32, merged: vec3f) {
 }`;
 
 // A 1-px ray is built where it is read, from its two half pixels (the leaves, read from the scene). A ray whose end is
-// off the rows is not stored: it carries nothing and blocks. Reads load first and choose after, with no branch around
-// the load (a branch keeps a thread from issuing its loads together). A slot off the rows may lie outside the buffer;
-// WebGPU then reads some value inside it, which is discarded.
-const rayFn = (oddBlocks: boolean) => /* wgsl */ `
+// off the rows is not stored: it carries nothing, and blocks unless the outside is free (it then lies outside). Reads
+// load first and choose after, with no branch around the load (a branch keeps a thread from issuing its loads
+// together). A slot off the rows may lie outside the buffer; WebGPU then reads some value inside it, which is discarded.
+const rayFn = (oddBlocks: boolean, free: boolean) => /* wgsl */ `
 fn ray(length: i32, block: i32, rise: i32, startRow: i32) -> Ray {
   if (length == 1) { return extend(halfPixel(block, startRow, rise), halfPixel(block, startRow + rise, rise)); }
   let endRow = startRow + rise; let stored = endRow >= 0 && endRow < N;
@@ -143,13 +197,13 @@ fn ray(length: i32, block: i32, rise: i32, startRow: i32) -> Ray {
       : `
   let loaded = loadRay(slot);`
   }
-  return Ray(select(0.0, loaded.transmittance, stored), select(vec3f(0.0), loaded.radiance, stored));
+  return Ray(select(${free ? '1.0' : '0.0'}, loaded.transmittance, stored), select(vec3f(0.0), loaded.radiance, stored));
 }
 `;
 
 // splitOut: write even blocks to raysOut and odd blocks to raysOutOdd
-const extensionsShader = (N: number, splitOut: boolean) => /* wgsl */ `
-${common(N)}
+const extensionsShader = (N: number, splitOut: boolean, free: boolean) => /* wgsl */ `
+${common(N, free)}
 @group(0) @binding(2) var<storage, read> raysIn: array<vec2u>;          // length / 2: even blocks
 @group(0) @binding(9) var<storage, read> raysInOdd: array<vec2u>;       // and odd blocks
 @group(0) @binding(3) var<storage, read_write> raysOut: array<vec2u>;${
@@ -160,7 +214,7 @@ ${common(N)}
 }
 ${loadRayFn}
 ${storeRayFn}
-${rayFn(true)}
+${rayFn(true, free)}
 @compute @workgroup_size(${WORKGROUP})
 fn extensions(@builtin(global_invocation_id) id: vec3u, @builtin(num_workgroups) groups: vec3u) {
   let i = threadIndex(id, groups);
@@ -192,17 +246,45 @@ fn extensions(@builtin(global_invocation_id) id: vec3u, @builtin(num_workgroups)
 // (sign +1 for the order whose left half has the higher rise)
 const parentRead = (wu: boolean, args: string, sign: string) => (wu ? `wuShare(rowsAt(${args}), ${sign})` : `mergedAt(${args})`);
 
-const mergeFns = (wu: boolean) => /* wgsl */ `
+// with a producer: a stored slot (see outsideLayout): block 0's rows first, then the other blocks'
+const paddedSlotFn = (N: number) => {
+  const layout = outsideLayout(N);
+  return /* wgsl */ `
+const PAD0 = array<i32, ${layout.length}>(${layout.map((l) => l.pad0).join(', ')});
+const PAD1 = array<i32, ${layout.length}>(${layout.map((l) => l.pad1).join(', ')});
+fn mergedSlot(length: i32, block: i32, index: i32, startRow: i32) -> i32 {
+  let level = firstTrailingBit(u32(length)); let pad0 = PAD0[level]; let pad1 = PAD1[level];
+  let others = riseCount(length) * (N + 2 * pad0) + ((block - 1) * riseCount(length) + index) * (N + 2 * pad1) + startRow + pad1;
+  return select(others, index * (N + 2 * pad0) + startRow + pad0, block == 0);
+}
+fn storedRow(length: i32, block: i32, startRow: i32) -> bool {
+  let level = firstTrailingBit(u32(length)); let pad = select(PAD1[level], PAD0[level], block == 0);
+  return startRow >= -pad && startRow < N + pad;
+}`;
+};
+
+const mergeFns = (wu: boolean, padded: boolean, N: number) => /* wgsl */ `
 @group(0) @binding(8) var<storage, read> coneWeights: array<f32>;
 fn coneWeight(length: i32, rise: i32) -> f32 {
   return coneWeights[CONE_OFFSETS[firstTrailingBit(u32(length))] + riseIndex(length, rise)];
+}${
+  padded
+    ? `${paddedSlotFn(N)}
+// one load: block 0 holds the outside's light, the other blocks the merge's, the pad rows included
+fn mergedAt(length: i32, block: i32, rise: i32, startRow: i32) -> vec3f {
+  let merged = loadMerged(mergedSlot(length, block, riseIndex(length, rise), startRow));
+  return select(vec3f(0.0), merged, hasRise(length, rise) && storedRow(length, block, startRow));
 }
+`
+    : `
 // none at length N, in column block 0 or off the rows (loaded, then discarded)
 fn mergedAt(length: i32, block: i32, rise: i32, startRow: i32) -> vec3f {
   let merged = loadMerged(((block - 1) * riseCount(length) + riseIndex(length, rise)) * N + startRow);
-  return select(vec3f(0.0), merged, hasRise(length, rise) && length != N && block >= 1 && startRow >= 0 && startRow < N);
+  let outside = length == N || block < 1 || startRow < 0 || startRow >= N;
+  return select(vec3f(0.0), select(merged, vec3f(0.0), outside), hasRise(length, rise));
 }
-// a parent's merged radiance carried through the part of it before the ray
+`
+}// a parent's merged radiance carried through the part of it before the ray
 fn carry(merged: vec3f, before: Ray, cone: f32) -> vec3f {
   return before.transmittance * merged + cone * before.radiance;
 }${
@@ -254,41 +336,72 @@ fn merge(length: i32, block: i32, rise: i32, row: i32) -> vec3f {
 
 // One thread per (block, row) and a run of RUN consecutive rises, so that the parents and first halves one rise shares
 // with the next stay in registers.
-const mergeShader = (N: number, run: number, wu: boolean, read: boolean) => /* wgsl */ `
-${common(N)}
+const mergeShader = (N: number, run: number, wu: boolean, read: false | 'fan' | 'rows', padded: boolean) => /* wgsl */ `
+${common(N, padded)}
 @group(0) @binding(2) var<storage, read> raysIn: array<vec2u>;         // length
 @group(0) @binding(4) var<storage, read> mergedIn: array<u32>;         // parent length
 @group(0) @binding(5) var<storage, read_write> mergedOut: array<u32>;  // length
 ${loadRayFn}
 ${loadMergedFn}
 ${storeMergedFn}
-${rayFn(false)}
-${mergeFns(wu)}${
+${rayFn(false, padded)}
+${mergeFns(wu, padded, N)}${
   read
     ? `
-// The coupling read, strength 0.1: a first half's light enters a bent parent's second half weighted 1 ± 0.4 s. Over the
-// first half's start rows, with up = R(y0 + 1) - R(y0) and down = R(y0) - R(y0 - 1), s is the mean of the slope
-// (up + down) / sum and its limited form 2 minmod(up, down) / sum, sum = R(y0 - 1) + R(y0) + R(y0 + 1) (minmod: the
-// smaller of two differences of one sign, else 0), per channel. + where the first half has the lower rise.
-fn rowSlope(length: i32, block: i32, rise: i32, endRow: i32, own: vec3f) -> vec3f {
-  let below = leftHalf(length, block, rise, endRow - 1).radiance; let above = leftHalf(length, block, rise, endRow + 1).radiance;
+// The coupling read: a first half's light enters a bent parent's second half weighted 1 ± g s, + where the first half
+// has the lower rise. With below, own and above three of the first half's neighbours' light, up = above - own and
+// down = own - below, s is the mean of the slope (up + down) / sum and its limited form 2 minmod(up, down) / sum,
+// sum = below + own + above (minmod: the smaller of two differences of one sign, else 0), per channel. ${
+      read === 'fan'
+        ? `The neighbours
+// are its fan at a fixed start, rises ∓ 1 (a rise past the fan's edge reads as its own), and g = 0.53.`
+        : `The neighbours
+// are its start rows ∓ 1, and g = 0.4 (strength 0.1).`
+    }
+fn couplingSlope(length: i32, block: i32, rise: i32, endRow: i32, own: vec3f) -> vec3f {${
+      read === 'fan'
+        ? `
+  let below = select(own, leftHalf(length, block, rise - 1, endRow - 1).radiance, hasRise(length, rise - 1));
+  let above = select(own, leftHalf(length, block, rise + 1, endRow + 1).radiance, hasRise(length, rise + 1));`
+        : `
+  let below = leftHalf(length, block, rise, endRow - 1).radiance; let above = leftHalf(length, block, rise, endRow + 1).radiance;`
+    }
   let up = above - own; let down = own - below; let sum = below + own + above;
   let limited = select(vec3f(0.0), sign(up) * min(abs(up), abs(down)), up * down > vec3f(0.0));
   return select(vec3f(0.0), (limited + 0.5 * (up + down)) / sum, sum > vec3f(0.0));
 }
 fn steered(before: Ray, slope: vec3f, sign: f32) -> Ray {
-  return Ray(before.transmittance, before.radiance * (1.0 + sign * 0.4 * slope));
+  return Ray(before.transmittance, before.radiance * (1.0 + sign * ${read === 'fan' ? '0.53' : '0.4'} * slope));
 }`
     : ''
 }
-const RUN: i32 = ${run};
+const RUN: i32 = ${run};${
+  padded
+    ? `
+// per level and run of rises, the start rows the merge computes (the rows of the scene and the pads read): a block's
+// threads are its runs' rows, one after another
+const RUN_OFFSETS = array<i32, ${Math.log2(N) + 1}>(${runRows(N, run).offsets.join(', ')});
+const RUN_THREADS = array<i32, ${Math.log2(N) + 1}>(${runRows(N, run).totals.join(', ')});
+@group(0) @binding(19) var<storage, read> runRows: array<vec4i>;   // first row, last row, first thread, 0`
+    : ''
+}
 @compute @workgroup_size(${WORKGROUP})
 fn mergeLevel(@builtin(global_invocation_id) id: vec3u, @builtin(num_workgroups) groups: vec3u) {
   let i = threadIndex(id, groups);
   if (i >= params.count) { return; }
   let parentLength = params.length; let length = parentLength / 2;
-  let count = riseCount(length); let runs = (count + RUN - 1) / RUN;
-  let row = i32(i % u32(N)); let blockAndRun = i32(i / u32(N));
+  let count = riseCount(length); let runs = (count + RUN - 1) / RUN;${
+    padded
+      ? `
+  let level = firstTrailingBit(u32(length)); let perBlock = RUN_THREADS[level]; let base = RUN_OFFSETS[level];
+  let j = i32(i) % perBlock;
+  var low = 0; var high = runs - 1;   // the run whose threads hold j
+  while (low < high) { let middle = (low + high + 1) / 2; if (runRows[base + middle].z <= j) { low = middle; } else { high = middle - 1; } }
+  let rows = runRows[base + low];
+  let row = rows.x + j - rows.z; let blockAndRun = (i32(i) / perBlock) * runs + low;`
+      : `
+  let row = i32(i % u32(N)); let blockAndRun = i32(i / u32(N));`
+  }
   let first = (blockAndRun % runs) * RUN; let last = min(first + RUN, count);
   let block = blockAndRun / runs + 1; let parentBlock = block / 2;
   if ((block & 1) == 0) {
@@ -297,7 +410,7 @@ fn mergeLevel(@builtin(global_invocation_id) id: vec3u, @builtin(num_workgroups)
       let rise = riseAt(length, q);
       let upper = ${wu ? 'rowsAt' : 'mergedAt'}(parentLength, parentBlock, 2 * rise + 1, row);
       let merged = gather(parentLength, rise, ${wu ? 'wuShare(lower, 1.0)' : 'lower'}, NOTHING, mergedAt(parentLength, parentBlock, 2 * rise, row), NOTHING, ${wu ? 'wuShare(upper, -1.0)' : 'upper'}, NOTHING);
-      storeMerged(u32(((block - 1) * count + q) * N + row), merged);
+      storeMerged(u32(${padded ? 'mergedSlot(length, block, q, row)' : '((block - 1) * count + q) * N + row'}), merged);
       lower = upper;
     }
   } else {
@@ -305,8 +418,8 @@ fn mergeLevel(@builtin(global_invocation_id) id: vec3u, @builtin(num_workgroups)
     var sameBefore = leftHalf(length, block - 1, riseAt(length, first), row);${
       read
         ? `
-    var lowerSlope = rowSlope(length, block - 1, riseAt(length, first) - 1, row, lowerBefore.radiance);
-    var sameSlope = rowSlope(length, block - 1, riseAt(length, first), row, sameBefore.radiance);`
+    var lowerSlope = couplingSlope(length, block - 1, riseAt(length, first) - 1, row, lowerBefore.radiance);
+    var sameSlope = couplingSlope(length, block - 1, riseAt(length, first), row, sameBefore.radiance);`
         : ''
     }${
       wu
@@ -319,7 +432,7 @@ fn mergeLevel(@builtin(global_invocation_id) id: vec3u, @builtin(num_workgroups)
       let upperBefore = leftHalf(length, block - 1, rise + 1, row);${
         read
           ? `
-      let upperSlope = rowSlope(length, block - 1, rise + 1, row, upperBefore.radiance);`
+      let upperSlope = couplingSlope(length, block - 1, rise + 1, row, upperBefore.radiance);`
           : ''
       }${
         wu
@@ -331,7 +444,7 @@ fn mergeLevel(@builtin(global_invocation_id) id: vec3u, @builtin(num_workgroups)
         ${wu ? 'wuShare(lower, -1.0)' : 'mergedAt(parentLength, parentBlock, 2 * rise - 1, row - (rise - 1))'}, ${read ? 'steered(lowerBefore, lowerSlope, 1.0)' : 'lowerBefore'},
         mergedAt(parentLength, parentBlock, 2 * rise, row - rise), sameBefore,
         ${wu ? 'wuShare(upper, 1.0)' : 'mergedAt(parentLength, parentBlock, 2 * rise + 1, row - (rise + 1))'}, ${read ? 'steered(upperBefore, upperSlope, -1.0)' : 'upperBefore'});
-      storeMerged(u32(((block - 1) * count + q) * N + row), merged);
+      storeMerged(u32(${padded ? 'mergedSlot(length, block, q, row)' : '((block - 1) * count + q) * N + row'}), merged);
       lowerBefore = sameBefore; sameBefore = upperBefore;${read ? ' lowerSlope = sameSlope; sameSlope = upperSlope;' : ''}${
         wu
           ? `
@@ -348,8 +461,8 @@ fn mergeLevel(@builtin(global_invocation_id) id: vec3u, @builtin(num_workgroups)
 // and here the merge runs to length 1 and then into them. A pixel is the left half pixel of the three 1-px rays from
 // its row and the right half pixel of the three that end in its row: rise 0 from its own row, 1 from the row below, -1
 // from the row above.
-const pixelsShader = (N: number, wu: boolean) => /* wgsl */ `
-${common(N)}
+const pixelsShader = (N: number, wu: boolean, padded: boolean, normals: boolean) => /* wgsl */ `
+${common(N, padded)}
 // (1 - m, (1 - m) / (1 - t)), m = (1 - t) / (-ln t) the mean transmittance over the half pixel
 fn slab(t: f32) -> vec2f {
   let a = select(-log(max(t, 1e-30)), 0.0, t >= 1.0);   // log(1) need not be 0 on the GPU
@@ -359,52 +472,147 @@ fn slab(t: f32) -> vec2f {
 }
 @group(0) @binding(2) var<storage, read> raysIn: array<vec2u>;          // bound, never read: 1-px rays come from the scene
 @group(0) @binding(4) var<storage, read> mergedIn: array<u32>;          // length 2
-@group(0) @binding(6) var<storage, read_write> axisFluence: array<vec4f>;  // [axis][world column][row]
+@group(0) @binding(6) var<storage, read_write> axisFluence: array<vec4f>;  // [axis][world column][row]${
+  normals
+    ? `
+@group(0) @binding(12) var<storage, read> normalMap: array<vec4f>;      // world [x * N + y]: (normal, 0), z out of the plane
+@group(0) @binding(13) var<storage, read_write> axisVector: array<vec4f>;  // [axis][world column][row]: (irradiance vector, 0, 0)`
+    : ''
+}
 ${loadRayFn}
 ${loadMergedFn}
-${rayFn(false)}
-${mergeFns(wu)}
+${rayFn(false, padded)}
+${mergeFns(wu, padded, N)}${
+  padded
+    ? `
+@group(0) @binding(18) var<storage, read> outsideOne: array<u32>;   // length 1, padded: the outside cells only
+// a 1-px ray's merged radiance; in column 0, the outside's (elsewhere the merge's, off the rows from the pads)
+fn merged1(column: i32, rise: i32, startRow: i32) -> vec3f {
+  let packed = outsideOne[mergedSlot(1, 0, riseIndex(1, rise), startRow)];
+  let outside = vec3f(vec3u(packed, packed >> 9u, packed >> 18u) & vec3u(511u)) * bitcast<f32>(((packed >> 27u) + 103u) << 23u);
+  return select(merge(1, column, rise, startRow), outside, column < 1);
+}`
+    : ''
+}
 @compute @workgroup_size(${WORKGROUP})
 fn pixels(@builtin(global_invocation_id) id: vec3u, @builtin(num_workgroups) groups: vec3u) {
   let i = threadIndex(id, groups);
   if (i >= params.count) { return; }
   let column = i32(i) / N; let row = i32(i) % N;
-  var value = vec3f(0.0);
+  var value = vec3f(0.0);${
+    normals
+      ? `
+  // Each of the 12 bins (3 rises, 4 frustums) holds the light from one direction u in the plane, against the bin's travel.
+  // A bin lights the pixel as light from u at 45° above the plane: a flat normal takes it whole.
+  let axis = params.frustum >> 1; let along = select(1.0, -1.0, (params.frustum & 1) == 1);
+  let worldColumn = select(column, N - 1 - column, (params.frustum & 1) == 1);
+  let normal = normalMap[select(worldColumn * N + row, row * N + worldColumn, axis == 1)].xyz;
+  var vector = vec2f(0.0);`
+      : ''
+  }
   for (var rise = -1; rise <= 1; rise++) {
     // The merge at length 1/2, with the 1-px cone weights (exact: π/2 - ln 2 within a row, ½ ln 2 between rows). A left
     // half takes its 1-px ray's merged radiance through nothing before it; a right half through the left half pixel.
     // (At rise 0 both halves are the same 1-px ray's.)
     let cone = coneWeight(1, rise);
-    let fromRow = merge(1, column, rise, row);
+    let fromRow = ${padded ? 'merged1' : 'merge'}(${padded ? '' : '1, '}column, rise, row);
     var toRow = fromRow;
-    if (rise != 0) { toRow = merge(1, column, rise, row - rise); }
+    if (rise != 0) { toRow = ${padded ? 'merged1' : 'merge'}(${padded ? '' : '1, '}column, rise, row - rise); }
     let left = carry(fromRow, NOTHING, cone);
     let right = carry(toRow, halfPixel(column, row - rise, rise), cone);
     // Both halves deposit: their light over a half pixel's length (½), less what the medium absorbs over it, plus its
     // own light along the ray.
     let own = pixelAt(column, row, rise); let s = slab(own.w);
-    value += 0.5 * ((1.0 - s.x) * (left + right) + 2.0 * cone * s.y * own.rgb);
+${
+      normals
+        ? `    let bin = 0.5 * ((1.0 - s.x) * (left + right) + 2.0 * cone * s.y * own.rgb);
+    let u = -normalize(select(vec2f(along, f32(rise)), vec2f(f32(rise), along), axis == 1));
+    value += max(0.0, normal.z + dot(normal.xy, u)) * bin;
+    vector += dot(bin, vec3f(0.2126, 0.7152, 0.0722)) * u;`
+        : `    value += 0.5 * ((1.0 - s.x) * (left + right) + 2.0 * cone * s.y * own.rgb);`
+    }
   }
   value *= select(0.0, 1.0, pixelAt(column, row, 0).w > 0.0);   // a solid pixel holds no fluence
   let mirrored = (params.frustum & 1) == 1;
   let slot = ((params.frustum >> 1) * N + select(column, N - 1 - column, mirrored)) * N + row;
   if (mirrored) { value += axisFluence[slot].rgb; }   // the mirror-image frustum adds to the forward one
-  axisFluence[slot] = vec4f(value, 0.0);
+  axisFluence[slot] = vec4f(value, 0.0);${
+    normals
+      ? `
+  vector *= select(0.0, 1.0, pixelAt(column, row, 0).w > 0.0);
+  if (mirrored) { vector += axisVector[slot].xy; }
+  axisVector[slot] = vec4f(vector, 0.0, 0.0);`
+      : ''
+  }
 }
 `;
 
+// The outside's light, written into block 0 of a length's merged radiance before the merge reads it: one workgroup per
+// start row (rows -pad0 ... N + pad0 - 1), its threads over the rises, each rise at the rows the merge reads only. The
+// source prepares a row first (outsidePrepare, in uniform control flow), then gives each cell (outsideValue).
+const fillShader = (N: number, source: string) => /* wgsl */ `
+${common(N, true)}
+@group(0) @binding(5) var<storage, read_write> mergedOut: array<u32>;
+@group(0) @binding(19) var<storage, read> outsideRows: array<vec2i>;   // per level (as the cone weights) and rise
+${storeMergedFn}
+${paddedSlotFn(N)}
+${source}
+@compute @workgroup_size(${WORKGROUP})
+fn fill(@builtin(workgroup_id) group: vec3u, @builtin(num_workgroups) groups: vec3u, @builtin(local_invocation_index) local: u32) {
+  let length = params.length;
+  let row = i32(group.x + group.y * groups.x) - PAD0[firstTrailingBit(u32(length))];
+  outsidePrepare(length, row, local);
+  workgroupBarrier();
+  for (var index = i32(local); index < riseCount(length); index += ${WORKGROUP}) {
+    let rows = outsideRows[CONE_OFFSETS[firstTrailingBit(u32(length))] + index];
+    if (row < rows.x || row > rows.y) { continue; }
+    storeMerged(u32(mergedSlot(length, 0, index, row)), outsideValue(length, 0, riseAt(length, index), row));
+  }
+}
+`;
+
+/** the start rows the merge computes, per level and run of rises (blocks ≥ 1): (first row, last row, the run's first
+ * thread in its block, 0); where each level's runs start, and each level's threads per block */
+function runRows(N: number, run: number) {
+  const offsets: number[] = [], totals: number[] = [], rows: number[] = [];
+  for (const level of outsideLayout(N)) {
+    offsets.push(rows.length / 4);
+    let threads = 0;
+    for (let first = 0; first < riseCount(level.length); first += run) {
+      const ranges = level.merged.slice(first, first + run), lo = Math.min(...ranges.map((r) => r[0])), hi = Math.max(...ranges.map((r) => r[1]));
+      rows.push(lo, hi, threads, 0);
+      threads += hi - lo + 1;
+    }
+    totals.push(threads);
+  }
+  return { offsets, totals, rows: new Int32Array(rows) };
+}
+
 // the fluence: the two axes' sum
-const outputShader = (N: number) => /* wgsl */ `
-${common(N)}
+const outputShader = (N: number, normals: boolean) => /* wgsl */ `
+${common(N, false)}
 @group(0) @binding(6) var<storage, read> axisFluence: array<vec4f>;
-@group(0) @binding(7) var<storage, read_write> result: array<vec4f>;  // world [x * N + y]: (fluence rgb, its luminance)
+@group(0) @binding(7) var<storage, read_write> result: array<vec4f>;  // world [x * N + y]: (fluence rgb, its luminance)${
+  normals
+    ? `
+@group(0) @binding(13) var<storage, read> axisVector: array<vec4f>;
+@group(0) @binding(14) var<storage, read_write> vectors: array<vec4f>;  // world [x * N + y]: see vectorBuffer`
+    : ''
+}
 @compute @workgroup_size(${WORKGROUP})
 fn output(@builtin(global_invocation_id) id: vec3u, @builtin(num_workgroups) groups: vec3u) {
   let i = threadIndex(id, groups);
   if (i >= params.count) { return; }
   let x = i32(i) / N; let y = i32(i) % N;
   let value = axisFluence[x * N + y].rgb + axisFluence[(N + y) * N + x].rgb;   // [axis][column][row]
-  result[i] = vec4f(value, dot(value, vec3f(0.2126, 0.7152, 0.0722)));
+  result[i] = vec4f(value, dot(value, vec3f(0.2126, 0.7152, 0.0722)));${
+    normals
+      ? `
+  let vector = axisVector[x * N + y].xy + axisVector[(N + y) * N + x].xy;
+  let size = length(vector);
+  vectors[i] = vec4f(size * (0.5 + 0.5 * cos(atan2(vector.y, vector.x) - vec3f(0.0, 2.0943951, 4.1887902))), size);`
+      : ''
+  }
 }
 `;
 
@@ -420,7 +628,8 @@ export class ReciprocalHRC {
   readonly device: GPUDevice;
   readonly N: number;
   readonly wuSplit: boolean;
-  readonly couplingRead: boolean;
+  readonly couplingRead: false | 'fan' | 'rows';
+  readonly normals: boolean;
   /** consecutive rises per merge thread */
   readonly mergeRun: number;
   profiler: Profiler | null = null;
@@ -428,6 +637,16 @@ export class ReciprocalHRC {
   readonly sceneBuffer: GPUBuffer;
   /** fluence, world [x * N + y]: (rgb, luminance) */
   readonly outputBuffer: GPUBuffer;
+  /** with the normals option, world [x * N + y]: the irradiance vector E (the bins' luminance along their directions) as
+   * (|E| (½ + ½ cos(φ - k 2π/3)) for k = 0, 1, 2, |E|), φ its angle */
+  readonly vectorBuffer: GPUBuffer | null = null;
+  #normalMap: GPUBuffer | null = null;
+  #axisVector: GPUBuffer | null = null;
+  #producer: OutsideProducer | null;
+  #topOutside: GPUBuffer | null = null; // with a producer: merged radiance of length N (the outside's only)
+  #outsideOne: GPUBuffer | null = null; // and of length 1
+  #rowTables: GPUBuffer | null = null;
+  #runRowsAt = 0;
   #rays = new Map<number, GPUBuffer>(); // even blocks by length; later also the merged radiance of length / 2
   #oddRays = new Map<number, GPUBuffer>();
   #topMerged: GPUBuffer; // merged radiance of length N / 2
@@ -436,12 +655,14 @@ export class ReciprocalHRC {
   #params: GPUBuffer;
   #program: Dispatch[] = [];
 
-  constructor(device: GPUDevice, N: number, { wuSplit = false, couplingRead = false }: Options = {}) {
+  constructor(device: GPUDevice, N: number, { wuSplit = false, couplingRead = false, producer, normals = false }: Options = {}) {
     if (N < 4 || (N & (N - 1)) !== 0) throw new Error('ReciprocalHRC: N must be a power of 2, at least 4');
     this.device = device;
     this.N = N;
     this.wuSplit = wuSplit;
     this.couplingRead = couplingRead;
+    this.#producer = producer ?? null;
+    this.normals = normals;
     // a merge dispatch has about 2 N² rises
     this.mergeRun = Math.min(16, 2 ** Math.max(0, Math.floor(Math.log2((2 * N * N) / MERGE_THREADS))));
     const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
@@ -450,17 +671,37 @@ export class ReciprocalHRC {
     this.outputBuffer = buffer('reciprocal HRC fluence', N * N * 16);
     // each buffer holds its even blocks, then the merged radiance of length / 2, and the odd blocks of length / 4
     const oddBytes = (length: number) => (length >= 8 ? oddRays(N, length / 4) * RAY_BYTES : 0);
+    const padded = this.#producer !== null;
+    const layout = padded ? outsideLayout(N) : null;
+    const mergedBytes = (length: number) => (layout ? layout[Math.log2(length)].cells : storedRays(N, length)) * MERGED_BYTES;
     for (const length of this.#stored()) {
-      const merged = length > 2 ? storedRays(N, length / 2) * MERGED_BYTES : 0;
+      const merged = length > 2 ? mergedBytes(length / 2) : 0;
       this.#rays.set(length, buffer(`reciprocal HRC rays ${length}`, Math.max(evenRays(N, length) * RAY_BYTES, merged, oddBytes(length))));
     }
-    this.#topMerged = buffer(`reciprocal HRC merged ${N / 2}`, Math.max(storedRays(N, N / 2) * MERGED_BYTES, oddBytes(N)));
+    this.#topMerged = buffer(`reciprocal HRC merged ${N / 2}`, Math.max(mergedBytes(N / 2), oddBytes(N)));
+    if (padded) {
+      this.#topOutside = buffer(`reciprocal HRC merged ${N}`, mergedBytes(N));
+      this.#outsideOne = buffer('reciprocal HRC merged 1', mergedBytes(1));
+      // the rows each fill writes (per level and rise) and each merge computes (per level and run), in one buffer
+      const fills = layout!.flatMap((l) => l.zero.flat()), runs = runRows(N, this.mergeRun).rows;
+      this.#runRowsAt = Math.ceil((4 * fills.length) / 256) * 256; // a binding's offset is a multiple of 256 (and of 16)
+      const rows = new Int32Array(this.#runRowsAt / 4 + runs.length);
+      rows.set(fills);
+      rows.set(runs, this.#runRowsAt / 4);
+      this.#rowTables = buffer('reciprocal HRC outside rows', rows.byteLength);
+      device.queue.writeBuffer(this.#rowTables, 0, rows);
+    }
     for (const length of this.#stored())
       if (oddRays(N, length) > 0) this.#oddRays.set(length, 4 * length === N ? this.#topMerged : this.#rays.get(4 * length)!);
     this.#axisFluence = buffer('reciprocal HRC fluence per axis', 2 * N * N * 16);
     const cones = coneTable(N).weights;
     this.#coneWeights = buffer('reciprocal HRC cone weights', cones.byteLength);
     device.queue.writeBuffer(this.#coneWeights, 0, cones);
+    if (normals) {
+      this.#normalMap = buffer('reciprocal HRC normals', N * N * 16);
+      this.#axisVector = buffer('reciprocal HRC irradiance vector per axis', 2 * N * N * 16);
+      this.vectorBuffer = buffer('reciprocal HRC irradiance vector', N * N * 16);
+    }
     this.#params = buffer('reciprocal HRC params', this.dispatches * PARAM_STRIDE, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
     this.#build();
   }
@@ -473,7 +714,8 @@ export class ReciprocalHRC {
   }
 
   get dispatches() {
-    return 4 * (2 * this.#stored().length + 1) + 1;
+    const fills = this.#producer ? this.#stored().length + 2 : 0;
+    return 4 * (2 * this.#stored().length + 1 + fills) + 1;
   }
 
   #build() {
@@ -484,16 +726,19 @@ export class ReciprocalHRC {
         layout: 'auto',
         compute: { module: device.createShaderModule({ label: `reciprocal HRC ${entryPoint}`, code }), entryPoint },
       });
+    const producer = this.#producer, padded = producer !== null;
     const pipelines = {
-      extensions: pipeline(extensionsShader(N, false), 'extensions'),
-      extensionsSplit: pipeline(extensionsShader(N, true), 'extensions'),
-      merge: pipeline(mergeShader(N, this.mergeRun, this.wuSplit, this.couplingRead), 'mergeLevel'),
-      pixels: pipeline(pixelsShader(N, this.wuSplit), 'pixels'),
-      output: pipeline(outputShader(N), 'output'),
+      extensions: pipeline(extensionsShader(N, false, padded), 'extensions'),
+      extensionsSplit: pipeline(extensionsShader(N, true, padded), 'extensions'),
+      merge: pipeline(mergeShader(N, this.mergeRun, this.wuSplit, this.couplingRead, padded), 'mergeLevel'),
+      pixels: pipeline(pixelsShader(N, this.wuSplit, padded, this.normals), 'pixels'),
+      output: pipeline(outputShader(N, this.normals), 'output'),
+      ...(producer ? { fill: pipeline(fillShader(N, producer.wgsl), 'fill') } : {}),
     };
     const params = new ArrayBuffer(this.dispatches * PARAM_STRIDE);
     let slot = 0;
-    const add = (stage: 'extensions' | 'merge' | 'pixels' | 'output', label: string, frustum: number, length: number, count: number, buffers: Record<number, GPUBuffer>, variant: keyof typeof pipelines = stage) => {
+    type Variant = 'extensions' | 'extensionsSplit' | 'merge' | 'pixels' | 'output' | 'fill';
+    const add = (stage: 'extensions' | 'merge' | 'pixels' | 'output' | 'outside', label: string, frustum: number, length: number, count: number, buffers: Record<number, GPUBuffer>, variant: Variant = stage as Variant, ranges: Record<number, GPUBufferBinding> = {}) => {
       const offset = slot++ * PARAM_STRIDE;
       new Int32Array(params, offset, 4).set([length, 0, frustum]);
       const unsigned = new Uint32Array(params, offset, 4);
@@ -502,34 +747,49 @@ export class ReciprocalHRC {
       const entries: GPUBindGroupEntry[] = [
         { binding: 1, resource: { buffer: this.#params, offset, size: 16 } },
         ...Object.entries(buffers).map(([binding, buffer]) => ({ binding: Number(binding), resource: { buffer } })),
+        ...Object.entries(ranges).map(([binding, resource]) => ({ binding: Number(binding), resource })),
       ];
-      const p = pipelines[variant];
+      const p = (pipelines as Partial<Record<Variant, GPUComputePipeline>>)[variant]!;
       this.#program.push({ label, stage, pipeline: p, bindGroup: device.createBindGroup({ layout: p.getBindGroupLayout(0), entries }), count });
     };
     const scene = this.sceneBuffer;
+    // what the producer's fill reads
+    const source: Record<number, GPUBuffer> = Object.fromEntries((producer?.buffers ?? []).map((b, i) => [20 + i, b]));
+    const layout = padded ? outsideLayout(N) : [], runThreads = runRows(N, this.mergeRun).totals;
+    const rowTable = (offset: number, size?: number) => ({ buffer: this.#rowTables!, offset, size });
+    // a workgroup per row of block 0
+    const fill = (frustum: number, length: number, target: GPUBuffer) =>
+      add('merge', `outside ${length}`, frustum, length, (N + 2 * layout[Math.log2(length)].pad0) * WORKGROUP, { 5: target, ...source }, 'fill', { 19: rowTable(0, this.#runRowsAt) });
+    const normals: Record<number, GPUBuffer> = this.#normalMap ? { 12: this.#normalMap, 13: this.#axisVector! } : {};
+    const vectors: Record<number, GPUBuffer> = this.vectorBuffer ? { 13: this.#axisVector!, 14: this.vectorBuffer } : {};
     // length 1 comes from the scene: these bindings are never read
     const rays = (length: number) => (length === 1 ? scene : this.#rays.get(length)!);
     const odd = (length: number) => (length === 1 ? scene : this.#oddRays.get(length)!);
     // written over the rays of twice the length, which the merge has read by then
-    const merged = (length: number) => (length === N ? scene : 2 * length === N ? this.#topMerged : rays(2 * length));
+    const merged = (length: number) => (length === N ? (this.#topOutside ?? scene) : 2 * length === N ? this.#topMerged : rays(2 * length));
     for (let frustum = 0; frustum < 4; frustum++) {
       for (const length of this.#stored()) {
         const buffers = { 0: scene, 2: rays(length / 2), 9: odd(length / 2), 3: rays(length) };
         if (this.#oddRays.has(length)) add('extensions', `extensions ${length}`, frustum, length, storedRays(N, length), { ...buffers, 10: odd(length) }, 'extensionsSplit');
         else add('extensions', `extensions ${length}`, frustum, length, storedRays(N, length), buffers);
       }
+      // with a producer, a length's outside cells are filled just before the merge that reads them, once the rays their
+      // buffer held are read
       for (const length of this.#stored().reverse()) {
-        const count = (N / length - 1) * Math.ceil(riseCount(length) / this.mergeRun) * N;
-        add('merge', `merge ${2 * length}`, frustum, 2 * length, count, { 0: scene, 2: rays(length), 4: merged(2 * length), 5: merged(length), 8: this.#coneWeights });
+        if (padded) fill(frustum, 2 * length, merged(2 * length));
+        const count = (N / length - 1) * (padded ? runThreads[Math.log2(length)] : Math.ceil(riseCount(length) / this.mergeRun) * N);
+        add('merge', `merge ${2 * length}`, frustum, 2 * length, count, { 0: scene, 2: rays(length), 4: merged(2 * length), 5: merged(length), 8: this.#coneWeights }, 'merge', padded ? { 19: rowTable(this.#runRowsAt) } : {});
       }
-      add('pixels', 'merge 2, 1 and pixels', frustum, 2, N * N, { 0: scene, 2: rays(2), 4: merged(2), 6: this.#axisFluence, 8: this.#coneWeights });
+      if (padded) (fill(frustum, 2, merged(2)), fill(frustum, 1, this.#outsideOne!));
+      add('pixels', 'merge 2, 1 and pixels', frustum, 2, N * N, { 0: scene, 2: rays(2), 4: merged(2), 6: this.#axisFluence, 8: this.#coneWeights, ...(padded ? { 18: this.#outsideOne! } : ({} as Record<number, GPUBuffer>)), ...normals });
     }
-    add('output', 'output', 0, 1, N * N, { 6: this.#axisFluence, 7: this.outputBuffer });
+    add('output', 'output', 0, 1, N * N, { 6: this.#axisFluence, 7: this.outputBuffer, ...vectors });
     device.queue.writeBuffer(this.#params, 0, params);
   }
 
   #buffers() {
-    return new Set([this.sceneBuffer, this.outputBuffer, ...this.#rays.values(), ...this.#oddRays.values(), this.#topMerged, this.#axisFluence, this.#coneWeights]);
+    const optional = [this.vectorBuffer, this.#normalMap, this.#axisVector, this.#topOutside, this.#outsideOne, this.#rowTables].filter((b) => b !== null);
+    return new Set([this.sceneBuffer, this.outputBuffer, ...this.#rays.values(), ...this.#oddRays.values(), this.#topMerged, this.#axisFluence, this.#coneWeights, ...optional]);
   }
 
   destroy() {
@@ -537,7 +797,7 @@ export class ReciprocalHRC {
     this.#params.destroy();
   }
 
-  upload({ emission, solid, absorption }: ReciprocalScene) {
+  upload({ emission, solid, absorption, normal }: ReciprocalScene) {
     // per rise class, both axes column by column, so that every frustum reads along its rows
     const { N } = this, data = new Float32Array(RISE_CLASSES * 2 * N * N * 4);
     for (let i = 0; i < N * N; i++) {
@@ -552,6 +812,11 @@ export class ReciprocalHRC {
       }
     }
     this.device.queue.writeBuffer(this.sceneBuffer, 0, data);
+    if (this.#normalMap) {
+      const normals = new Float32Array(N * N * 4);
+      for (let i = 0; i < N * N; i++) normals.set(normal ? normal.subarray(3 * i, 3 * i + 3) : [0, 0, 1], 4 * i);
+      this.device.queue.writeBuffer(this.#normalMap, 0, normals);
+    }
   }
 
   /** consecutive dispatches of one stage share a compute pass */

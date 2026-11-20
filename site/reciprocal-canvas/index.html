@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reciprocal HRC canvas</title>
+    <meta name="description" content="Reciprocal HRC with offscreen light" />
+    <link rel="stylesheet" href="../_shared/page.css" />
+    <style>
+      body {
+        grid-template-columns: 260px minmax(0, 1fr) 300px;
+      }
+      #right {
+        border-left: 1px solid var(--line);
+        overflow: hidden;
+      }
+      #view {
+        position: absolute;
+        touch-action: none;
+        cursor: grab;
+      }
+      #view.grabbing {
+        cursor: grabbing;
+      }
+      #fps {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--dim);
+        margin-right: auto;
+      }
+      #measure,
+      #sweep-counts {
+        margin-top: 8px;
+        font-size: 11px;
+        color: var(--dim);
+        min-height: 1em;
+      }
+      #error {
+        position: absolute;
+        inset: 0;
+        display: none;
+        place-items: center;
+        color: var(--dim);
+        padding: 24px;
+        text-align: center;
+      }
+      #error.open {
+        display: grid;
+      }
+      .pair {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0 12px;
+        margin-top: 10px;
+      }
+      .pair .field {
+        margin-top: 0;
+      }
+      @media (max-width: 760px) {
+        html,
+        body {
+          height: auto;
+          overflow: auto;
+        }
+        body {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        #canvas-area {
+          order: -1;
+          height: min(100vw, 72vh);
+        }
+        aside,
+        #right,
+        #explainer {
+          overflow: visible;
+        }
+        #left,
+        #right {
+          border: 0;
+          border-top: 1px solid var(--line);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <aside id="left">
+      <section>
+        <h2>world</h2>
+        <div id="domain"></div>
+      </section>
+      <section>
+        <h2>outside</h2>
+        <div id="outside"></div>
+        <div id="sweep-counts"></div>
+      </section>
+    </aside>
+    <div id="canvas-area">
+      <canvas id="view"></canvas>
+      <div id="help"></div>
+      <div id="error"></div>
+    </div>
+    <aside id="right">
+      <section id="explainer">
+        <h2>reciprocal HRC canvas</h2>
+        <p>A window onto a larger world that moves: rooms, lights and doors, and a bright source far to the west behind a
+          fence. Drag to pan, scroll to zoom.</p>
+        <p>Reciprocal HRC solves a square around the view. Light from outside it, from boxes at any distance and from the
+          sky, comes in along the lines that cross the square's edge: every frame, each line takes the light of the first
+          thing it meets beyond the edge. Nothing outside is kept between frames.</p>
+      </section>
+      <section>
+        <h2>output</h2>
+        <div id="output"></div>
+        <div id="measure"></div>
+      </section>
+      <section id="tools">
+        <span id="fps"></span>
+        <button id="shot-btn" title="screenshot (s)">shot</button>
+        <button id="help-btn" title="keyboard shortcuts (?)">?</button>
+      </section>
+    </aside>
+    <script type="module" src="./canvas.ts"></script>
+  </body>
+</html>

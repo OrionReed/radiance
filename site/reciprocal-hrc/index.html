@@ -112,6 +112,10 @@
       <section>
         <div id="scene-params"></div>
       </section>
+      <section>
+        <h2>lighting</h2>
+        <div id="lighting"></div>
+      </section>
       <section id="pen">
         <h2><span id="pen-title">pen</span> <small id="pen-sub"></small></h2>
         <div id="pen-fields"></div>
@@ -207,7 +211,8 @@
       }
 
       // config rebuilds the engine when it changes; display only redraws
-      const config = { N: 256, wuSplit: true, couplingRead: false };
+      const config = { N: 256, wuSplit: true, couplingRead: 'off', normals: false };
+      const lighting = { vectors: false };
       const display = { scene: false, map: 'tone', stops: 0 };
       // reference view: 0 none, 1 path trace, 2 exact, 3 and 4 the error against them; the scene locks while one is shown
       let refMode = 0, reference = null, drawnVersion = -1;
@@ -357,7 +362,30 @@
       const filters = el('div', { className: 'pair' });
       $('scene-params').append(filters);
       toggle(filters, { label: 'Wu split', key: 'w', title: 'the merge splits an odd parent\'s far light between its two bent orders by its slope across rows, not ½ / ½', ...field(config, 'wuSplit'), url: ['wu', true] });
-      toggle(filters, { label: 'coupling read', key: 'k', title: 'the light a first half hands to a bent parent\'s second half is weighted by the first half\'s slope across rows', ...field(config, 'couplingRead'), url: ['coupling', false] });
+      const COUPLING = [['off', 'off'], ['fan', 'fan', 'across the first half\'s fan at its start (strength 0.53)'], ['rows', 'rows', 'across the first half\'s start rows (strength 0.1)']];
+      segmented($('scene-params'), { label: 'coupling read', key: 'k', title: 'the light a first half hands to a bent parent\'s second half is weighted by a half-limited slope of the first half\'s light', options: COUPLING, ...field(config, 'couplingRead'), url: ['coupling', 'off'] });
+
+      // The pixels pass holds each pixel's light in 12 directional bins (3 rises, 4 frustums). With the normal map, each
+      // bin lights the floor as light from its direction 45° above the plane; the irradiance vector is the bins' sum along
+      // their directions, shown as its size in the hue of its angle.
+      const lightingFields = el('div', { className: 'pair' });
+      $('lighting').append(lightingFields);
+      toggle(lightingFields, { label: 'normal map', key: 'm', title: 'a floor of domes, lit per direction by the 12 bins of the pixels pass', ...field(config, 'normals'), url: ['normals', false] });
+      toggle(lightingFields, { label: 'irradiance vector', key: 'e', title: 'the bins\' luminance summed along their directions: its size, in the hue of its angle (needs the normal map)', ...field(lighting, 'vectors', () => (redraw = true)), enabled: () => config.normals, url: ['vectors', false] });
+      // domes in staggered rows, N / 16 px across, on the whole floor: world [x N + y], y up
+      let normalMap = null;
+      function domes(N) {
+        if (normalMap?.length === 3 * N * N) return normalMap;
+        normalMap = new Float32Array(3 * N * N);
+        const size = N / 16, radius = 0.42 * size;
+        for (let x = 0; x < N; x++) for (let y = 0; y < N; y++) {
+          const row = Math.floor((y + 0.5) / size), shift = row % 2 ? size / 2 : 0;
+          const u = ((x + 0.5 + shift) % size) - size / 2, v = ((y + 0.5) % size) - size / 2, r2 = u * u + v * v;
+          const n = r2 < radius * radius ? [u, v, Math.sqrt(radius * radius - r2)] : [0, 0, 1], k = Math.hypot(...n);
+          normalMap.set(n.map((c) => c / k), 3 * (x * N + y));
+        }
+        return normalMap;
+      }
 
       const output = outputPanel($('output'), {
         controls: { segmented, slider, pill },
@@ -457,12 +485,12 @@
 
       let engineNow = null;
       // whether an engine solves the current config
-      const current = (g) => g?.N === config.N && g.wuSplit === config.wuSplit && g.couplingRead === config.couplingRead;
+      const current = (g) => g?.N === config.N && g.wuSplit === config.wuSplit && g.couplingRead === (config.couplingRead === 'off' ? false : config.couplingRead) && g.normals === config.normals;
       function engine() {
         const N = config.N;
         if (current(engineNow)) return engineNow;
         engineNow?.destroy();
-        engineNow = new ReciprocalHRC(device, N, { wuSplit: config.wuSplit, couplingRead: config.couplingRead });
+        engineNow = new ReciprocalHRC(device, N, { wuSplit: config.wuSplit, couplingRead: config.couplingRead === 'off' ? false : config.couplingRead, normals: config.normals });
         engineNow.profiler = profiler;
         profiler.reset();
         if (reference?.N !== N) {   // the reference depends on the scene and N only, not on the scheme's settings
@@ -485,7 +513,7 @@
         const drawBG = device.createBindGroup({
           layout: drawPipe.getBindGroupLayout(0),
           entries: [
-            { binding: 0, resource: { buffer: cascade.outputBuffer } },
+            { binding: 0, resource: { buffer: lighting.vectors && cascade.vectorBuffer ? cascade.vectorBuffer : cascade.outputBuffer } },
             { binding: 1, resource: { buffer: cascade.sceneBuffer } },
             { binding: 2, resource: { buffer: drawUniforms } },
             { binding: 3, resource: { buffer: referenceBuffer } },
@@ -545,7 +573,7 @@
         const t0 = performance.now();
         if (scene) {
           rasterise(cascade.N);
-          cascade.upload({ emission, solid, absorption });
+          cascade.upload({ emission, solid, absorption, normal: cascade.normals ? domes(cascade.N) : undefined });
           profiler.traffic.clear();
           for (const [label, t] of Object.entries(cascade.traffic())) profiler.traffic.set(label, t);
           renderPasses(cascade);
@@ -597,6 +625,8 @@
         ['b', 'next map'],
         ['w', 'Wu split'],
         ['k', 'coupling read'],
+        ['m', 'normal map'],
+        ['e', 'irradiance vector'],
         ['n', 'new shape'],
         ['⌫', 'delete selected shape'],
         ['c', 'clear drawing'],
@@ -628,7 +658,9 @@
         switch (e.key) {
           case 'v': case 'V': display.scene = !display.scene; redraw = true; changed(); break;
           case 'w': case 'W': config.wuSplit = !config.wuSplit; changed(); touch(); break;
-          case 'k': case 'K': config.couplingRead = !config.couplingRead; changed(); touch(); break;
+          case 'k': case 'K': config.couplingRead = COUPLING[(COUPLING.findIndex(([v]) => v === config.couplingRead) + 1) % COUPLING.length][0]; changed(); touch(); break;
+          case 'm': case 'M': config.normals = !config.normals; changed(); touch(); break;
+          case 'e': case 'E': lighting.vectors = !lighting.vectors; redraw = true; changed(); break;
           case 'b': case 'B': display.map = display.map === 'tone' ? 'banded' : 'tone'; redraw = true; changed(); break;
           case '?': toggleHelp(); break;
           case 'Escape': toggleHelp(false); selectShape(null); break;
@@ -705,7 +737,7 @@
         device.queue.submit([encoder.finish()]);
         const fluence = await read(cascade.outputBuffer, N * N * 16), exact = await read(reference.exactOutput, N * N * 4);
         const isLight = (i) => emission[3 * i] + emission[3 * i + 1] + emission[3 * i + 2] > 0;
-        let sum = 0, largest = 0, count = 0, schemeSum = 0, exactSum = 0;
+        let sum = 0, squares = 0, above = 0, largest = 0, count = 0, schemeSum = 0, exactSum = 0;
         for (let x = 1; x < N - 1; x++)
           for (let y = 1; y < N - 1; y++) {
             const i = x * N + y, want = exact[i] * 2 * Math.PI;
@@ -714,9 +746,9 @@
             for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) nearLight ||= isLight((x + dx) * N + y + dy);
             if (nearLight) continue;
             const error = Math.abs(fluence[4 * i + 3] - want) / want;
-            sum += error; largest = Math.max(largest, error); schemeSum += fluence[4 * i + 3]; exactSum += want; count++;
+            sum += error; squares += error * error; above += error > 1e-2 ? 1 : 0; largest = Math.max(largest, error); schemeSum += fluence[4 * i + 3]; exactSum += want; count++;
           }
-        return { pixels: count, meanRelativeError: sum / count, largestRelativeError: largest, totalRatio: schemeSum / exactSum };
+        return { pixels: count, meanRelativeError: sum / count, rmsRelativeError: Math.sqrt(squares / count), shareAbove1e2: above / count, largestRelativeError: largest, totalRatio: schemeSum / exactSum };
       }
       window.reciprocalHRC = { config, display, device, engine, touch, capture, profiler, setReference, switchScene, scenes, errorAgainstExact, reference: () => reference, stats: () => ({ frameMs }), scene: () => ({ shapes, strokes, emission, solid, absorption }) };
 

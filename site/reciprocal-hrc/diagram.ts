@@ -63,90 +63,36 @@ function grid(cols: [number, number], rows: [number, number], U: number, left: n
 const svg = (height: number, scale: number, description: string, body: string) =>
   `<svg viewBox="0 0 ${WIDE} ${height}" width="${WIDE * scale}" height="${height * scale}" role="img" aria-label="${description}">${body}</svg>`;
 
-// The merge step: a child of length 4 and rise 0 from parents of length 8, bent parents in both orders. A parent piece
-// that is also a child ray is drawn once, as the child.
-const chainsToPieces = (chains: Point[][]) => chains.flatMap((c) => c.slice(1).map((q, i): Piece => [c[i], q]));
-const key = ([[a, b], [c, d]]: Piece) => [a, b, c, d].join();
-function pieces(parentChains: Point[][], childChains: Point[][]) {
-  const child = chainsToPieces(childChains), used = new Set(child.map(key)), seen = new Set<string>();
-  const parent = chainsToPieces(parentChains).filter((p) => !used.has(key(p)) && !seen.has(key(p)) && seen.add(key(p)));
-  return { parent, child };
-}
-const MERGE_COLS: [number, number] = [-8, 8], MERGE_ROWS: [number, number] = [-2, 3], MERGE_U = 16, MERGE_LEFT = 14;
-// each parent's share, by the row it is read on
-const SHARES_1X: [number, string][] = [[2.5, HALF], [0.5, '1'], [-1.5, HALF]];
-const SHARES_2X: [number, string][] = [[1.5, HALF], [0.5, '1'], [-0.5, HALF]];
-const MERGE = {
-  // P's own ray runs from P (plane 4) to Q (plane 0); all three parents are read at Q
-  hrc: {
-    name: 'Normal HRC merge',
-    ...pieces(
-      [
-        [[0, 0.5], [-4, 0.5], [-8, 0.5]],
-        [[0, 0.5], [-4, 0.5], [-8, 2.5]],
-        [[0, 0.5], [-4, 2.5], [-8, 2.5]],
-        [[0, 0.5], [-4, 0.5], [-8, -1.5]],
-        [[0, 0.5], [-4, -1.5], [-8, -1.5]],
-      ],
-      [[[0, 0.5], [4, 0.5]]],
-    ),
-  },
-  // B (columns 4-7, row 0) is the right half of all three parents, each read at its own start through its own left half
-  reciprocal: {
-    name: 'Reciprocal HRC merge, 1×',
-    ...pieces(
-      [
-        [[0, 0.5], [4, 0.5], [8, 0.5]],
-        [[0, -1.5], [4, 0.5], [8, 0.5]],
-        [[0, -1.5], [4, -1.5], [8, 0.5]],
-        [[0, 2.5], [4, 0.5], [8, 0.5]],
-        [[0, 2.5], [4, 2.5], [8, 0.5]],
-      ],
-      [[[0, 0.5], [4, 0.5]], [[0, -1.5], [4, 0.5]], [[0, 2.5], [4, 0.5]], [[4, 0.5], [8, 0.5]]],
-    ),
-  },
-  // at 2× B's parents have rises 0 and ±1; a parent of rise ±1 is the mean of halves (±1, 0) and (0, ±1)
-  reciprocal2x: {
-    name: 'Reciprocal HRC merge, 2× (default)',
-    ...pieces(
-      [
-        [[0, 0.5], [4, 0.5], [8, 0.5]],
-        [[0, -0.5], [4, 0.5], [8, 0.5]],
-        [[0, -0.5], [4, -0.5], [8, 0.5]],
-        [[0, 1.5], [4, 0.5], [8, 0.5]],
-        [[0, 1.5], [4, 1.5], [8, 0.5]],
-      ],
-      [[[0, 0.5], [4, 0.5]], [[0, -0.5], [4, 0.5]], [[0, 1.5], [4, 0.5]], [[4, 0.5], [8, 0.5]]],
-    ),
-  },
-};
+// Ray extension and the merge at a 2× base ray count, for a straight and an odd direction. A cN+1 ray is two cN rays end
+// to end, or for an odd direction the mean of its two bent paths; the merge runs the same paths backwards.
+/** a cN+1 ray of length L and rise d as its cN paths: (rise to the odd plane, weight) */
+const pathsOf = (L: number, d: number): [number, number][] =>
+  d % 2 === 0 && Math.abs(d / 2) <= L / 2 ? [[d / 2, 1]] : [[(d - 1) / 2, 0.5], [(d + 1) / 2, 0.5]];
+const at = (x: number, row: number): Point => [x, row + 0.5];
 
-/** the merge step for HRC and reciprocal HRC at 1× and 2×, on one column grid so the read and write planes line up */
+/** two columns (extension, merge) by two rows (a straight direction, an odd one) */
 export function mergeDiagrams({ scale = 1 } = {}) {
-  const top = TEXT.name + 5, height = top + (MERGE_ROWS[1] - MERGE_ROWS[0]) * MERGE_U + 2;
-  const panel = (which: 'hrc' | 'reciprocal' | 'reciprocal2x') => {
-    const step = MERGE[which], g = grid(MERGE_COLS, MERGE_ROWS, MERGE_U, MERGE_LEFT, top, `merge-${which}`);
-    const isB = (p: Piece) => which !== 'hrc' && key(p) === key([[4, 0.5], [8, 0.5]]);
-    g.rays([[step.parent, C.parent], [step.child.filter((p) => !isB(p)), C.child], [step.child.filter(isB), C.half]]);
-    if (which === 'hrc') {
-      g.span(0, 0, C.read);
-      g.span(4, 0, C.write);
-      g.label([0, 1.5], 'Q', C.read);
-      g.label([4, 1.5], 'P', C.write);
-    } else {
-      for (const r of which === 'reciprocal' ? [0, -2, 2] : [0, -1, 1]) g.span(0, r, C.read);
-      g.span(4, 0, C.write);
-      g.label([7.5, 1.5], 'B', C.half);
-    }
-    for (const [y, text] of which === 'reciprocal2x' ? SHARES_2X : SHARES_1X) g.out.push(`<text x="${f(g.X(MERGE_COLS[0]) - 3)}" y="${f(g.Y(y) + TEXT.label * 0.36)}" font-size="${TEXT.label}" fill="${C.dim}" text-anchor="end" ${SANS}>${text}</text>`);
-    g.name(step.name);
-    return g.out.join('');
-  };
-  return {
-    hrc: svg(height, scale, 'HRC: P reads all three parents at Q, the end of its own ray', panel('hrc')),
-    reciprocal: svg(height, scale, 'reciprocal HRC: B is the right half of three parents, each read at its own start through its own left half', panel('reciprocal')),
-    reciprocal2x: svg(height, scale, 'reciprocal HRC at a 2× base ray count: B is the right half of parents of rises 0 and ±1, each read at its own start', panel('reciprocal2x')),
-  };
+  const U = 24, top = TEXT.name + 5, side = 14, between = WIDE - 2 * side - 8 * U, rowGap = 10;
+  const height = 2 * (4 * U) + rowGap + top + 2;
+  const body: string[] = [];
+  [2, 3].forEach((d, row) => {
+    ['extension', 'merge'].forEach((name, slot) => {
+      const g = grid([0, 4], [0, 4], U, side + slot * (4 * U + between), top + row * (4 * U + rowGap), `merge-${name}-${d}`);
+      const paths = pathsOf(4, d);
+      g.out.push(`<line x1="${f(g.X(0))}" y1="${f(g.Y(0.5))}" x2="${f(g.X(4))}" y2="${f(g.Y(d + 0.5))}" stroke="${C.parent}" stroke-opacity="0.45" stroke-width="${3 * LINE}" stroke-linecap="round"/>`);
+      g.rays([[paths.map(([m]): Piece => [at(0, 0), at(2, m)]).concat(paths.map(([m]): Piece => [at(2, m), at(4, d)])), C.child]]);
+      for (const [m, w] of paths) if (w !== 1) g.label([2, m + 0.5 + (m > d / 2 ? 0.8 : -0.8)], HALF, slot === 0 ? C.dim : C.write);
+      g.out.push(`<circle cx="${f(g.X(4))}" cy="${f(g.Y(d + 0.5))}" r="3.5" fill="${C.text}"/>`);
+      if (slot === 1) {
+        g.span(0, 0, C.read);
+        g.out.push(`<circle cx="${f(g.X(0) + 5)}" cy="${f(g.Y(0.5))}" r="2.5" fill="${C.write}"/>`);
+        for (const [m] of paths) g.span(2, m, C.write);
+      }
+      if (row === 0) g.name(name);
+      body.push(g.out.join(''));
+    });
+  });
+  return svg(height, scale, 'ray extension builds a cN+1 ray from 2 cN rays, or from 4 (two bent paths, ½ each) for an odd direction; the merge sends the cN+1 merged radiance back along the same paths', body.join(''));
 }
 
 /** a ray of length 4 and rise 2 and its halves A and B: the extensions write the ray at its right end, the merge each

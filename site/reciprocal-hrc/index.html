@@ -131,7 +131,7 @@
         <figure id="merge-figure"></figure>
         <p>There is no ½ near/far blend on even planes and no reprojection, and each ray stores one merged radiance. The
           merge is reciprocal: light from p to q equals light from q to p, with any walls (<math><mi>K</mi><mo>=</mo><msup><mi>K</mi><mi mathvariant="normal">T</mi></msup></math> before the
-          solid mask and the row blur).</p>
+          solid mask).</p>
         <p>As in HRC's extensions, a ray is two half-length rays chained at its midpoint. When the halves can't have the
           same slope, the ray averages both bent orders, as HRC builds its odd rays.</p>
         <figure id="halves-figure"></figure>
@@ -172,33 +172,16 @@
         const mi = (x, colour) => `<mi${colour ? ` mathcolor='${colour}'` : ''}>${x}</mi>`;
         const sub = (a, b, colour, aColour) => `<msub>${mi(a, aColour)}${mi(b, colour)}</msub>`;
         const math = (x) => `<math>${x}</math>`;
-        const Ap = `<msub><mi>A</mi><mi>p</mi></msub>`;   // not labelled in the figure, so not coloured
         const symbols = (lines) => `<dl class='symbols'>${lines.map(([m, text]) => `<dt>${math(m)}</dt><dd>${text}</dd>`).join('')}</dl>`;
-        const formula = (m) => `<div class='panel-formula'>${math(m)}</div>`;
-        const hrcFormula = formula(sub('M', 'P', C.write) + '<mo>=</mo>' + sub('T', 'P', C.write) + sub('M', 'Q', C.read) + '<mo>+</mo><mi>c</mi>' + sub('R', 'P', C.write));
-        const recFormula = formula(sub('M', 'B', C.half) + '<mo>=</mo><msub><mo>∑</mo><mi>p</mi></msub>' + sub('w', 'p') + '<mo>(</mo><msub><mi>T</mi>' + Ap + '</msub>' + sub('M', 'p') + '<mo>+</mo>' + sub('c', 'p') + '<msub><mi>R</mi>' + Ap + '</msub><mo>)</mo>');
-        const merge = mergeDiagrams();
-        $('merge-figure').innerHTML = merge.hrc + hrcFormula + merge.reciprocal2x + merge.reciprocal + recFormula +
+        $('merge-figure').innerHTML = mergeDiagrams() +
           '<figcaption>' + legendKey([
-            ['dot', C.parent, 'the cN+1 rays (parents), odd rays in both bent orders'],
-            ['dot', C.child, "the cN rays read through: P's own ray in HRC, each parent's left half in reciprocal HRC"],
-            ['dot', C.read, "where the parents' merged radiance is read"],
-            ['dot', C.write, 'where the merge writes'],
-            ['letter', C.read, "HRC's c3 probe, where all three parents are read", 'Q'],
-            ['letter', C.write, "HRC's c2 probe, whose ray the merge writes", 'P'],
-            ['letter', C.half, 'the ray reciprocal HRC merges: the right half of all three parents', 'B'],
-            ['letter', C.dim, "each parent's weight, by the row it is read on", '½'],
+            ['dot', C.parent, 'a cN+1 ray: a straight direction (top), an odd one (bottom)'],
+            ['dot', C.child, 'the cN rays it is made of'],
+            ['dot', C.text, 'the cN+1 ray\'s probe, on an even plane; the middle plane is odd'],
+            ['dot', C.read, 'the cN+1 merged radiance, at the ray\'s endpoint'],
+            ['dot', C.write, 'where the merge writes the cN merged radiance'],
           ]) +
-          symbols([
-            [mi('M'), 'merged radiance: the light arriving from beyond'],
-            [mi('R') + '<mo>,</mo>' + mi('T'), "a ray's own radiance and transmittance"],
-            [mi('c') + '<mo>,</mo>' + sub('c', 'p'), "cone weight (normal HRC: P's two sub-cones)"],
-            [sub('w', 'p'), "parent p's weight: 1, or ½ if bent"],
-            [Ap, "parent p's left half (orange)"],
-            [sub('M', 'p'), "parent p's merged radiance, read at its start (light blue)"],
-          ]) +
-          "One merge step: a ray of length 4 (reciprocal HRC's B, HRC's P) from parents of length 8. Reciprocal HRC reads each parent at its own start probe, through its own left half. At the default 2× base ray count a ray of rise " + math('<mi>e</mi>') + ' has parents of rise ' + math('<mn>2</mn><mi>e</mi>') + ' and ' + math('<mn>2</mn><mi>e</mi><mo>±</mo><mn>1</mn>') + ' (here 0 and ±1); at 1×, ' + math('<mn>2</mn><mi>e</mi>') + ' and ' + math('<mn>2</mn><mi>e</mi><mo>±</mo><mn>2</mn>') + ". HRC reads all three at Q, the end of P's own ray, so the bent parents' light reaches P along a line it never crossed (the reprojection). With every slope, HRC's reprojection double-counts light along the axis and its error grows. " +
-          'Not shown: even planes. There HRC takes ½ the far-plane read and ½ the near-plane read; reciprocal HRC takes ' + math(sub('M', 'p')) + ' as it is, the near-plane read alone.</figcaption>';
+          "Ray extension is HRC's: a cN+1 ray is 2 cN rays end to end, or for an odd direction the average of its two bent paths (4 cN rays, ½ each). The merge runs the same paths backwards: the cN+1 merged radiance goes to the odd-plane cN rays at its endpoint and, carried through them, to the even-plane cN rays.</figcaption>";
         $('halves-figure').innerHTML = halvesDiagram() +
           "<div class='panel-captions'>" +
           `<div><math display='block'><mi>R</mi><mo>=</mo>${sub('R', 'B', C.half)}<mo>+</mo>${sub('T', 'B', C.half)}${sub('R', 'A', C.child)}</math><math display='block'><mi>T</mi><mo>=</mo>${sub('T', 'A', C.child)}${sub('T', 'B', C.half)}</math></div>` +
@@ -224,7 +207,7 @@
       }
 
       // config rebuilds the engine when it changes; display only redraws
-      const config = { N: 256, baseRayCount: 2, rowBlur: true };
+      const config = { N: 256, wuSplit: true, couplingRead: false };
       const display = { scene: false, map: 'tone', stops: 0 };
       // reference view: 0 none, 1 path trace, 2 exact, 3 and 4 the error against them; the scene locks while one is shown
       let refMode = 0, reference = null, drawnVersion = -1;
@@ -371,18 +354,10 @@
       segmented($('scene-params'), { label: 'resolution', title: 'tests set their own', options: SIZES.map((n) => [n, String(n)]), ...field(config, 'N'), enabled: () => !scenes[sceneUI.current].N, url: ['N', 256] });
       segmented($('size-field'), { label: 'size', options: PEN_SIZES.map((n) => [n, String(n)]), get: () => pen.size, set: setPenSize });
 
-      segmented($('scene-params'), {
-        label: 'base ray count',
-        key: 'r',
-        options: [
-          [1, '1× (HRC\'s)', 'L + 1 rays per probe at length L, HRC\'s own'],
-          [2, '2×', '2L + 1 rays per probe at length L: every line in exactly one ray'],
-        ],
-        get: () => config.baseRayCount,
-        set: (v) => ((config.baseRayCount = v), touch()),
-        url: ['rays', 2],
-      });
-      toggle($('scene-params'), { label: '[1 2 1] row blur', title: 'blurs each axis\'s fluence [¼ ½ ¼] across its rows over empty pixels, removing the row-to-row checkerboard', ...field(config, 'rowBlur'), url: ['blur', true] });
+      const filters = el('div', { className: 'pair' });
+      $('scene-params').append(filters);
+      toggle(filters, { label: 'Wu split', key: 'w', title: 'the merge splits an odd parent\'s far light between its two bent orders by its slope across rows, not ½ / ½', ...field(config, 'wuSplit'), url: ['wu', true] });
+      toggle(filters, { label: 'coupling read', key: 'k', title: 'the light a first half hands to a bent parent\'s second half is weighted by the first half\'s slope across rows', ...field(config, 'couplingRead'), url: ['coupling', false] });
 
       const output = outputPanel($('output'), {
         controls: { segmented, slider, pill },
@@ -482,12 +457,12 @@
 
       let engineNow = null;
       // whether an engine solves the current config
-      const current = (g) => g?.N === config.N && g.baseRayCount === config.baseRayCount && g.rowBlur === config.rowBlur;
+      const current = (g) => g?.N === config.N && g.wuSplit === config.wuSplit && g.couplingRead === config.couplingRead;
       function engine() {
         const N = config.N;
         if (current(engineNow)) return engineNow;
         engineNow?.destroy();
-        engineNow = new ReciprocalHRC(device, N, { baseRayCount: config.baseRayCount, rowBlur: config.rowBlur });
+        engineNow = new ReciprocalHRC(device, N, { wuSplit: config.wuSplit, couplingRead: config.couplingRead });
         engineNow.profiler = profiler;
         profiler.reset();
         if (reference?.N !== N) {   // the reference depends on the scene and N only, not on the scheme's settings
@@ -620,7 +595,8 @@
         ['+ −', 'pen size'],
         ['v', 'scene (lights red, solids blue)'],
         ['b', 'next map'],
-        ['r', 'base ray count: 2× / 1× (HRC\'s)'],
+        ['w', 'Wu split'],
+        ['k', 'coupling read'],
         ['n', 'new shape'],
         ['⌫', 'delete selected shape'],
         ['c', 'clear drawing'],
@@ -651,7 +627,8 @@
         let handled = true;
         switch (e.key) {
           case 'v': case 'V': display.scene = !display.scene; redraw = true; changed(); break;
-          case 'r': case 'R': config.baseRayCount = 3 - config.baseRayCount; changed(); touch(); break;
+          case 'w': case 'W': config.wuSplit = !config.wuSplit; changed(); touch(); break;
+          case 'k': case 'K': config.couplingRead = !config.couplingRead; changed(); touch(); break;
           case 'b': case 'B': display.map = display.map === 'tone' ? 'banded' : 'tone'; redraw = true; changed(); break;
           case '?': toggleHelp(); break;
           case 'Escape': toggleHelp(false); selectShape(null); break;

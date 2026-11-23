@@ -1,4 +1,4 @@
-import { $, el, createControls } from '../_shared/ui';
+import { $, el, createControls, writeControls, readControls } from '../_shared/ui';
 import { exactAt, relatives, solve, STRIDE, type Injection, type Solution } from './lines';
 
 // ── rendering: lines summed into a float buffer, then shown; one Renderer per canvas ──
@@ -14,6 +14,8 @@ interface Pass {
   gain: number;
   mode: number; // 0 lines, 1 pixels, 2 exact, 3 lines ÷ exact, 4 pixels ÷ exact, 5 coverage
   tone: number; top: number; grid: number; coverageNorm: number; latticeMask: number;
+  /** 0: the continuous field; 1: each image pixel's mean over RASTER² samples; 2: its centre */
+  raster: number;
   selPix: number[] | null;
   /** solid lines drawn on top: x0 y0 x1 y1, r g b a, width in CSS pixels */
   overlay: number[];
@@ -83,7 +85,8 @@ void main() { vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Positio
 const DISPLAY_FS = /* glsl */ `#version 300 es
 precision highp float;
 precision highp int;
-uniform sampler2D accum, pix, exact;
+uniform sampler2D accum, pix, exact, raster;
+uniform int rasterMode, S;
 uniform vec4 view, vp;
 uniform float N, top, coverageNorm;
 uniform int mode, tone, grid;
@@ -105,6 +108,20 @@ void main() {
   vec2 w = view.xy + uv * view.z;
   if (w.x < 0.0 || w.y < 0.0 || w.x >= N || w.y >= N) { o = vec4(0.04, 0.04, 0.04, 1.0); return; }
   vec3 acc = texelFetch(accum, ivec2(gl_FragCoord.xy), 0).rgb;
+  if (rasterMode != 0) {
+    // the field rendered at S samples per image pixel (texture row 0 is the image's bottom), reduced to one value
+    ivec2 p0 = ivec2(floor(w)) * S;
+    int top = int(N) * S - 1;
+    vec3 sum = vec3(0.0);
+    if (rasterMode == 1) {
+      for (int j = 0; j < 16; j++) for (int i = 0; i < 16; i++) if (i < S && j < S) sum += texelFetch(raster, ivec2(p0.x + i, top - p0.y - j), 0).rgb;
+      acc = sum / float(S * S);
+    } else {
+      int h = S / 2;
+      for (int j = 0; j < 2; j++) for (int i = 0; i < 2; i++) sum += texelFetch(raster, ivec2(p0.x + h - 1 + i, top - p0.y - h + 1 - j), 0).rgb;
+      acc = sum / 4.0;
+    }
+  }
   vec2 px = texelFetch(pix, ivec2(floor(w)), 0).rg;
   float ex = texture(exact, w / N).r;
   vec3 c;
@@ -163,6 +180,7 @@ class Renderer {
   lines; display; overlayProg; overlayVao: WebGLVertexArrayObject; overlayBuf: WebGLBuffer; dpr = 1;
   vao: WebGLVertexArrayObject; instances: WebGLBuffer;
   accum: WebGLTexture; pix: WebGLTexture; exact: WebGLTexture; fbo: WebGLFramebuffer;
+  rasterTex: WebGLTexture; rasterFbo: WebGLFramebuffer; rasterSize = 0;
   size = [0, 0]; count = 0; floatBlend: boolean;
 
   constructor(public canvas: HTMLCanvasElement) {
@@ -200,6 +218,8 @@ class Renderer {
     gl.bindVertexArray(null);
     this.accum = this.texture(gl.NEAREST); this.pix = this.texture(gl.NEAREST); this.exact = this.texture(gl.LINEAR);
     this.fbo = gl.createFramebuffer()!;
+    this.rasterTex = this.texture(gl.NEAREST);
+    this.rasterFbo = gl.createFramebuffer()!;
   }
 
   program(vs: string, fs: string) {
@@ -261,11 +281,43 @@ class Renderer {
     gl.viewport(x, y, w, h); gl.scissor(x, y, w, h);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
     gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
-    if (p.mode === 0 || p.mode === 3 || p.mode === 5) {
+    const needsLines = p.mode === 0 || p.mode === 3 || p.mode === 5;
+    if (needsLines) this.drawLines(p, perPx);
+    if (needsLines && p.raster) {
+      // the same field over the whole image at RASTER samples per image pixel
+      const size = p.N * RASTER;
+      if (size !== this.rasterSize) {
+        this.rasterSize = size;
+        gl.bindTexture(gl.TEXTURE_2D, this.rasterTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, this.floatBlend ? gl.RGBA32F : gl.RGBA16F, size, size, 0, gl.RGBA, gl.FLOAT, null);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.rasterFbo);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.rasterTex, 0);
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.rasterFbo);
+      gl.disable(gl.SCISSOR_TEST);
+      gl.viewport(0, 0, size, size);
+      gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+      this.drawLines({ ...p, view: { x: 0, y: 0, span: p.N } }, 1 / RASTER);
+      gl.enable(gl.SCISSOR_TEST);
+      gl.viewport(x, y, w, h); gl.scissor(x, y, w, h);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    const { p: prog, u } = this.display;
+    gl.useProgram(prog);
+    [this.accum, this.pix, this.exact, this.rasterTex].forEach((t, i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t); });
+    gl.uniform1i(u('accum'), 0); gl.uniform1i(u('pix'), 1); gl.uniform1i(u('exact'), 2); gl.uniform1i(u('raster'), 3);
+    gl.uniform1i(u('rasterMode'), needsLines ? p.raster : 0); gl.uniform1i(u('S'), RASTER);
+    this.display_(p, x, y, w, h, perPx);
+    gl.disable(gl.SCISSOR_TEST);
+  }
+
+  drawLines(p: Pass, perPx: number) {
+    const gl = this.gl;
+    {
       gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
       const { p: prog, u } = this.lines;
       gl.useProgram(prog);
-      gl.uniform4f(u('view'), p.view.x, p.view.y, p.view.span, perPx);
+      gl.uniform4f(u('view'), p.view.x, p.view.y, p.view.span, Math.abs(perPx));
       for (const k of ['extMask', 'mergeMask', 'latticeMask', 'frustumMask', 'profile', 'extMode', 'mergeMode', 'alongW', 'alongV'] as const) gl.uniform1i(u(k), p[k]);
       gl.uniform1f(u('width'), p.width); gl.uniform1f(u('gain'), p.gain);
       gl.bindVertexArray(this.vao);
@@ -273,11 +325,11 @@ class Renderer {
       gl.bindVertexArray(null);
       gl.disable(gl.BLEND);
     }
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    const { p: prog, u } = this.display;
-    gl.useProgram(prog);
-    [this.accum, this.pix, this.exact].forEach((t, i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t); });
-    gl.uniform1i(u('accum'), 0); gl.uniform1i(u('pix'), 1); gl.uniform1i(u('exact'), 2);
+  }
+
+  /** the display pass (its program bound, textures set) and the overlay */
+  display_(p: Pass, x: number, y: number, w: number, h: number, perPx: number) {
+    const gl = this.gl, u = this.display.u;
     gl.uniform4f(u('view'), p.view.x, p.view.y, p.view.span, perPx);
     gl.uniform4f(u('vp'), x, y, w, h);
     gl.uniform1f(u('N'), p.N); gl.uniform1f(u('top'), p.top); gl.uniform1f(u('coverageNorm'), p.coverageNorm);
@@ -297,10 +349,11 @@ class Renderer {
       gl.bindVertexArray(null);
       gl.disable(gl.BLEND);
     }
-    gl.disable(gl.SCISSOR_TEST);
   }
 }
 
+/** samples per image pixel, each way, when the field is rasterised */
+const RASTER = 8;
 const SELECTED = [1.0, 0.31, 0.85, 1.0];
 const DESCENDANT = [1.0, 0.7, 0.28];
 const ANCESTOR = [0.66, 0.55, 1.0];
@@ -309,19 +362,20 @@ const ANCESTOR = [0.66, 0.55, 1.0];
 
 type Range = [number, number] | null;
 const S = {
-  N: 32,
+  N: 64,
   tool: 'move' as 'move' | 'paint' | 'erase',
   /** the cascades each pass computes */
-  ext: [0, 4] as Range,
-  merge: [0, 4] as Range,
+  ext: [0, 5] as Range,
+  merge: [0, 5] as Range,
   /** the cascades drawn, and which pass's values they show */
-  draw: 0b11111,
+  draw: 0b1,
   drawExt: false, drawMerge: true,
   extValue: 0, mergeValue: 0,
   frustums: 0b0001,
   profile: 0, width: 1, alongW: 0, alongV: 0,
+  raster: 0,
   average: false,
-  show: 0, tone: 0, grid: true, exposure: 0,
+  show: 0, tone: 0, grid: false, exposure: 0,
 };
 const K = () => Math.log2(S.N);
 const VIEW = () => ({ x: 0, y: 0, span: S.N });
@@ -333,7 +387,7 @@ let sol: Solution | null = null, autoTop = 1;
 
 const setLight = (size: number) => {
   lights = [];
-  const cx = Math.floor(S.N / 4), cy = Math.floor(S.N / 2) - Math.floor(size / 2);
+  const cx = 0, cy = Math.floor(S.N / 2) - Math.floor(size / 2);
   for (let i = 0; i < size; i++) for (let j = 0; j < size; j++) lights.push([cx + i, cy + j]);
 };
 const inRange = (r: Range, k: number) => !!r && k >= r[0] && k <= r[1];
@@ -389,8 +443,9 @@ function compute() {
 }
 
 // ── controls ──
-const { segmented, slider, toggle, syncControls } = createControls(() => changed());
-const field = (name: keyof typeof S) => ({ get: () => S[name], set: (v: unknown) => { (S as Record<string, unknown>)[name] = v; } });
+const { controls, segmented, slider, toggle, syncControls } = createControls(() => changed());
+/** a binding of S[name], saved in the URL as `url` when it differs from its value now (the default) */
+const field = (name: keyof typeof S, url: string = name) => ({ get: () => S[name], set: (v: unknown) => { (S as Record<string, unknown>)[name] = v; }, url: [url, S[name]] as [string, unknown] });
 const FRUSTUMS = ['+x', '−x', '+y', '−y'];
 const fieldWrap = (label: string, body: HTMLElement, title = '') =>
   el('div', { className: 'field', title }, el('div', { className: 'label' }, el('span', { textContent: label })), body);
@@ -459,16 +514,16 @@ function buildStrips() {
   );
   strips = [ext, merge, draw];
 }
-segmented($('passes'), { label: 'values drawn', options: [['ext', 'extension'], ['merge', 'merge'], ['both', 'both']], get: () => (S.drawExt && S.drawMerge ? 'both' : S.drawExt ? 'ext' : 'merge'), set: (v: string) => { S.drawExt = v !== 'merge'; S.drawMerge = v !== 'ext'; } });
+segmented($('passes'), { label: 'values drawn', options: [['ext', 'extension'], ['merge', 'merge'], ['both', 'both']], get: () => (S.drawExt && S.drawMerge ? 'both' : S.drawExt ? 'ext' : 'merge'), set: (v: string) => { S.drawExt = v !== 'merge'; S.drawMerge = v !== 'ext'; }, url: ['values', 'merge'] });
 segmented($('passes'), {
   label: 'extension value',
   options: [[0, 'R', 'radiance along the ray'], [1, 'T', 'transmittance along the ray'], [2, 'c·R', 'R times the cone weight c']],
-  ...field('extValue'),
+  ...field('extValue', 'extv'),
 });
 segmented($('passes'), {
   label: 'merge value',
   options: [[0, 'M', 'merged radiance: the light reaching the ray\'s start from behind it, in its cone'], [1, 'M at end', 'T·M + c·R: the light leaving the ray\'s end'], [2, 'M along', 'from M at the start to M at end, along the ray']],
-  ...field('mergeValue'),
+  ...field('mergeValue', 'mergev'),
 });
 const frustumSeg = el('div', { className: 'seg' });
 const frustumButtons = FRUSTUMS.map((name, k) => {
@@ -478,12 +533,17 @@ const frustumButtons = FRUSTUMS.map((name, k) => {
   return b;
 });
 $('passes').append(fieldWrap('frustums', frustumSeg));
-segmented($('passes'), { label: 'cascades drawn', options: [[false, 'sum'], [true, 'average']], ...field('average') });
+segmented($('passes'), { label: 'cascades drawn', options: [[false, 'sum'], [true, 'average']], ...field('average', 'avg') });
 
 segmented($('lines'), { label: 'profile across', title: 'in rows: lines with one row offset sit one row apart', options: [[0, 'none'], [1, 'tent'], [2, 'gauss']], ...field('profile') });
 slider($('lines'), { label: 'width', min: 0.05, max: 4, step: 0.05, ...field('width'), format: (v: number) => `${v.toFixed(2)} rows` });
-segmented($('lines'), { label: 'width along', options: [[0, 'even'], [1, 'diamond'], [2, 'opens'], [3, 'closes']], ...field('alongW') });
-segmented($('lines'), { label: 'weight along', options: [[0, 'even'], [1, 'tent']], ...field('alongV') });
+segmented($('lines'), { label: 'width along', options: [[0, 'even'], [1, 'diamond'], [2, 'opens'], [3, 'closes']], ...field('alongW', 'alongw') });
+segmented($('lines'), { label: 'weight along', options: [[0, 'even'], [1, 'tent']], ...field('alongV', 'alongv') });
+segmented($('raster'), {
+  label: 'to pixels', title: `the line field drawn at ${RASTER}×${RASTER} samples per image pixel, then one value per pixel`,
+  options: [[0, 'off', 'the continuous field'], [1, 'box', 'the mean over the pixel'], [2, 'centre', 'the value at the pixel centre']],
+  ...field('raster'),
+});
 
 segmented($('viewc'), {
   label: 'show', cols: 3,
@@ -627,8 +687,84 @@ function setN(n: number) {
   buildStrips(); buildStack();
 }
 
+// ── URL: every setting round-trips; params at their default are left out ──
+// ext=0-5 | none, draw=0,2 | all | none, frustums=px,ny, lights=x.y,x.y | none, lit=R_px_c3_p5_r2_d-1_v1,…
+const SIZES = [16, 32, 64, 128];
+const FR_URL = ['px', 'nx', 'py', 'ny'];
+const isInt = (v: number, lo: number, hi: number) => Number.isInteger(v) && v >= lo && v <= hi;
+const rangeText = (r: Range) => (r ? `${r[0]}-${r[1]}` : 'none');
+const levelsText = (m: number) => (m === allLevels() ? 'all' : m ? [...Array(K()).keys()].filter((k) => (m >> k) & 1).join(',') : 'none');
+const litText = (j: Injection) => `${j.pass}_${FR_URL[j.frustum]}_c${j.k}_p${j.plane}_r${j.row}_d${j.d}_v${+j.value.toFixed(4)}`;
+function parseRange(s: string): Range | undefined {
+  if (s === 'none') return null;
+  if (s === 'all') return [0, K() - 1];
+  const [a, b = a] = s.split('-').map(Number);
+  return isInt(a, 0, K() - 1) && isInt(b, a, K() - 1) ? [a, b] : undefined;
+}
+function parseLevels(s: string): number | undefined {
+  if (s === 'all') return allLevels();
+  if (s === 'none') return 0;
+  const ks = s.split(',').map(Number);
+  return ks.every((k) => isInt(k, 0, K() - 1)) ? ks.reduce((m, k) => m | (1 << k), 0) : undefined;
+}
+function parseLit(s: string): Injection | undefined {
+  const m = /^([RM])_(px|nx|py|ny)_c(\d+)_p(\d+)_r(\d+)_d(-?\d+)_v(-?[\d.e+-]+)$/.exec(s);
+  if (!m) return;
+  const [k, plane, row, d, value] = m.slice(3).map(Number);
+  if (!isInt(k, 0, K() - 1) || !isInt(plane, 0, (S.N >> k) - 1) || !isInt(row, 0, 3 * S.N - 1) || !isInt(d, -(1 << k), 1 << k) || !Number.isFinite(value)) return;
+  return { pass: m[1] as 'R' | 'M', frustum: FR_URL.indexOf(m[2]), k, plane, row, d, value };
+}
+const defaultLights = () => { const keep = lights; setLight(1); const d = lights; lights = keep; return d; };
+
+let urlTimer = 0;
+function writeURL() {
+  const p = new URLSearchParams();
+  if (S.N !== 64) p.set('N', String(S.N));
+  writeControls(p, controls);
+  const all: Range = [0, K() - 1];
+  if (rangeText(S.ext) !== rangeText(all)) p.set('ext', rangeText(S.ext));
+  if (rangeText(S.merge) !== rangeText(all)) p.set('merge', rangeText(S.merge));
+  if (S.draw !== 0b1) p.set('draw', levelsText(S.draw));
+  if (S.frustums !== 0b0001) p.set('frustums', S.frustums ? FR_URL.filter((_, v) => (S.frustums >> v) & 1).join(',') : 'none');
+  const lightsText = (ls: [number, number][]) => (ls.length ? ls.map((l) => l.join('.')).join(',') : 'none');
+  if (lightsText(lights) !== lightsText(defaultLights())) p.set('lights', lightsText(lights));
+  if (injections.length) p.set('lit', injections.map(litText).join(','));
+  const qs = p.toString().replace(/%2C/g, ','); // commas are legal in a query; keep the lists legible
+  history.replaceState(null, '', qs ? '?' + qs : location.pathname);
+}
+/** apply the URL: N first, since it sets the cascades the rest refer to; anything invalid keeps its default */
+function readURL() {
+  const p = new URLSearchParams(location.search);
+  const n = Number(p.get('N'));
+  if (SIZES.includes(n) && n !== S.N) { setN(n); setLight(1); }
+  readControls(p, controls);
+  for (const { spec } of controls) {
+    if (!spec.url) continue;
+    const v = spec.get(), def = spec.url[1];
+    if (spec.options ? !spec.options.some((o) => o[0] === v) : typeof v === 'number' && !Number.isFinite(v)) spec.set(def);
+    else if (spec.min !== undefined && spec.max !== undefined) spec.set(Math.max(spec.min, Math.min(spec.max, v)));
+  }
+  const get = <T>(name: string, parse: (s: string) => T | undefined) => (p.has(name) ? parse(p.get(name)!) : undefined);
+  const ext = get('ext', parseRange), merge = get('merge', parseRange), draw = get('draw', parseLevels);
+  if (ext !== undefined) S.ext = ext;
+  if (merge !== undefined) S.merge = merge;
+  if (draw !== undefined) S.draw = draw;
+  const fr = get('frustums', (s) => (s === 'none' ? 0 : s.split(',').every((t) => FR_URL.includes(t)) ? s.split(',').reduce((m, t) => m | (1 << FR_URL.indexOf(t)), 0) : undefined));
+  if (fr !== undefined) S.frustums = fr;
+  const ls = get('lights', (s) => {
+    if (s === 'none') return [];
+    const out = s.split(',').map((t) => t.split('.').map(Number) as [number, number]);
+    return out.every((l) => l.length === 2 && l.every((c) => isInt(c, 0, S.N - 1))) ? [...new Map(out.map((l) => [l.join(), l])).values()] : undefined;
+  });
+  if (ls) lights = ls;
+  const lit = get('lit', (s) => s.split(',').map(parseLit).filter((j): j is Injection => !!j));
+  if (lit) injections = lit;
+}
+
 // ── draw ──
 function changed() {
+  clearTimeout(urlTimer);
+  urlTimer = window.setTimeout(writeURL, 100); // replaceState is rate-limited by browsers; a drag writes once it settles
   syncControls();
   for (const s of strips) s.sync();
   frustumButtons.forEach((b, k) => b.classList.toggle('on', !!(S.frustums & (1 << k))));
@@ -687,6 +823,7 @@ function render() {
     gain: S.average && shown ? 1 / shown : 1,
     mode: S.show, tone: S.tone, top: autoTop * 2 ** S.exposure * (S.average || S.show !== 0 ? 1 : Math.max(1, shown)), grid: S.grid ? 1 : 0,
     coverageNorm: 2 * Math.PI * (bits(S.frustums) / 4) * (S.average ? 1 : Math.max(1, shown)),
+    raster: S.raster,
     overlay: selected,
   });
 
@@ -705,7 +842,7 @@ function render() {
       profile: 3, width: 1, alongW: 0, alongV: 0,
       gain: (drawn ? 1 : 0.4) * dim,
       mode: isPixels ? 1 : 0, tone: 0, top: isPixels ? autoTop * 2 ** S.exposure : levelTop(t.k),
-      grid: isPixels ? (S.grid ? 1 : 0) : 2, coverageNorm: 1,
+      grid: isPixels ? (S.grid ? 1 : 0) : 2, coverageNorm: 1, raster: 0,
       overlay: isPixels ? [] : perLevel[t.k],
     });
   }
@@ -717,4 +854,5 @@ new ResizeObserver(draw).observe(grid);
 setLight(1);
 buildStrips();
 buildStack();
+readURL();
 changed();

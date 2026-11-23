@@ -7,6 +7,7 @@
 
 import type { Profiler, Traffic } from '../_shared/profiler';
 import { NODE_FIELDS, frustumLayouts, type Layout, type Tree } from './trees';
+import { rgba, staging, transpose } from '../_shared/upload';
 
 /** World arrays [x * N + y], y up: emission rgb (3 per pixel) and solid. A pixel with emission is a light. */
 export interface TreeScene {
@@ -313,14 +314,10 @@ export class TreeHRC {
     for (const b of [this.sceneBuffer, this.outputBuffer, this.#nodes, this.#rays, this.#merged, this.#axisFluence, this.#params]) b.destroy();
   }
 
+  #staging = staging();
   upload({ emission, solid }: TreeScene) {
-    const { N } = this, data = new Float32Array(2 * N * N * 4);
-    for (let i = 0; i < N * N; i++) {
-      const rgb = emission.subarray(3 * i, 3 * i + 3), light = rgb[0] > 0 || rgb[1] > 0 || rgb[2] > 0;
-      const pixel = light ? [rgb[0], rgb[1], rgb[2], 0] : [0, 0, 0, solid[i] ? 0 : 1];
-      data.set(pixel, 4 * i);
-      data.set(pixel, 4 * (N * N + (i % N) * N + Math.floor(i / N)));
-    }
+    const { N } = this, data = rgba(this.#staging(2 * N * N * 4), { emission, solid }, 0, 1, true);
+    transpose(data, N, 4, 0, N * N);
     this.device.queue.writeBuffer(this.sceneBuffer, 0, data);
   }
 

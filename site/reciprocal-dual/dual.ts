@@ -9,6 +9,7 @@
 // linear rule; the down pass reads the same terms backwards. Rays are f16 (rgb, transmittance); merged light RGB9E5.
 
 import type { Profiler } from '../_shared/profiler';
+import { rgba, staging } from '../_shared/upload';
 
 /** World arrays [x * N + y], y up: emission rgb (3 per pixel) and solid (1 opaque). A pixel with emission is a light. */
 export interface DualScene {
@@ -287,13 +288,9 @@ export class DualHRC {
     for (const b of this.#buffers) b.destroy();
   }
 
+  #staging = staging();
   upload({ emission, solid }: DualScene) {
-    const data = new Float32Array(this.N * this.N * 4);
-    for (let i = 0; i < this.N * this.N; i++) {
-      const light = emission[3 * i] > 0 || emission[3 * i + 1] > 0 || emission[3 * i + 2] > 0;
-      data.set(light ? [emission[3 * i], emission[3 * i + 1], emission[3 * i + 2], 0] : [0, 0, 0, solid[i] ? 0 : 1], 4 * i);
-    }
-    this.device.queue.writeBuffer(this.sceneBuffer, 0, data);
+    this.device.queue.writeBuffer(this.sceneBuffer, 0, rgba(this.#staging(this.N * this.N * 4), { emission, solid }, 0, 1, true));
   }
 
   /** consecutive dispatches of one stage share a compute pass */

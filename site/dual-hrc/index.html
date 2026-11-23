@@ -124,6 +124,7 @@
       // spot beam (direction, half width) per pixel; the engine (./dual-hrc.ts) solves it.
       import { DualHRC, MAX_LOBES } from './dual-hrc';
       import { scenesFor, SPAN } from '../_shared/scenes';
+      import { cover } from '../_shared/raster';
       import { Reference } from '../_shared/reference';
       import { Profiler } from '../_shared/profiler';
       import { DISPLAY_WGSL, EXPOSURE, EXPOSURE_CONTROL, BANDED_LEGEND, MAP_CONTROL, MAP_INDEX } from '../_shared/display';
@@ -195,31 +196,12 @@
         A.fill(1);
         SD.fill(0);
         SH.fill(-1);
-        const k = N / SPAN, g = (u) => (u + SPAN / 2) * k;
-        const put = (gx, gy, m) => {
-          if (gx < 0 || gy < 0 || gx >= N || gy >= N) return;
-          const i = gx * N + (N - 1 - gy);
+        const preview = cursor && !locked() && pen.kind !== 'eraser' && !pointer.dragging();
+        cover(N, { shapes, strokes, cursor: preview ? { x: cursor[0], y: cursor[1], size: pen.size, m: penMaterial() } : null }, (i, m) => {
           E[i] = m.b;
           A[i] = 0;   // every shape is solid
           if (m.spot && m.b > 0) ((SD[i] = (m.spot.dir * Math.PI) / 180), (SH[i] = (m.spot.width * Math.PI) / 360));
-        };
-        const widen = (a, b) => (b - a >= 1 ? [a, b] : [(a + b) / 2 - 0.5, (a + b) / 2 + 0.5]);
-        const box = (x0, x1, y0, y1, m) => {
-          [[x0, x1], [y0, y1]] = [widen(x0, x1), widen(y0, y1)];
-          const first = (a) => Math.ceil(a - 0.5);
-          for (let x = first(x0); x < first(x1); x++) for (let y = first(y0); y < first(y1); y++) put(x, y, m);
-        };
-        // a brush of `size` cells swept from a to b
-        const sweep = (ax, ay, bx, by, size, m) => {
-          const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) * 4)), h = size / 2;
-          for (let t = 0; t <= n; t++) {
-            const cx = ax + ((bx - ax) * t) / n, cy = ay + ((by - ay) * t) / n;
-            box(cx - h, cx + h, cy - h, cy + h, m);
-          }
-        };
-        for (const s of shapes) box(g(s.x), g(s.x + s.w), g(s.y), g(s.y + s.h), s);
-        for (const s of strokes) sweep(g(s.x0), g(s.y0), g(s.x1), g(s.y1), s.size * k, s);
-        if (cursor && !locked() && pen.kind !== 'eraser' && !pointer.dragging()) sweep(g(cursor[0]), g(cursor[1]), g(cursor[0]), g(cursor[1]), pen.size, penMaterial());
+        });
       }
 
       // ── pen and shape inspector ──

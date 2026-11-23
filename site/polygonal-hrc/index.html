@@ -122,6 +122,7 @@
       // (solid: A = 0).
       import { PolygonalHRC } from './polygonal-hrc.js';
       import { scenesFor, SPAN } from '../_shared/scenes';
+      import { cover } from '../_shared/raster';
       import { Reference } from '../_shared/reference';
       import { Profiler } from '../_shared/profiler';
       import { DISPLAY_WGSL, EXPOSURE, EXPOSURE_CONTROL, BANDED_LEGEND, MAP_CONTROL, MAP_INDEX } from '../_shared/display';
@@ -185,29 +186,11 @@
       function rasterise(N) {
         E.fill(0);
         A.fill(1);
-        const k = N / SPAN, g = (u) => (u + SPAN / 2) * k;
-        const put = (gx, gy, b, c) => {
-          if (gx < 0 || gy < 0 || gx >= N || gy >= N) return;
-          const i = gx * N + (N - 1 - gy);
-          E.set([b * c[0], b * c[1], b * c[2]], 3 * i); A[i] = 0;
-        };
-        const widen = (a, b) => (b - a >= 1 ? [a, b] : [(a + b) / 2 - 0.5, (a + b) / 2 + 0.5]);
-        const box = (x0, x1, y0, y1, b, c) => {
-          [[x0, x1], [y0, y1]] = [widen(x0, x1), widen(y0, y1)];
-          const first = (a) => (raster.snap ? Math.round(a) : Math.ceil(a - 0.5)), end = (a) => (raster.snap ? Math.round(a) : Math.ceil(a - 0.5));
-          for (let x = first(x0); x < end(x1); x++) for (let y = first(y0); y < end(y1); y++) put(x, y, b, c);
-        };
-        // a brush of `size` cells swept from a to b
-        const sweep = (ax, ay, bx, by, size, b, c) => {
-          const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) * 4)), h = size / 2;
-          for (let t = 0; t <= n; t++) {
-            const cx = ax + ((bx - ax) * t) / n, cy = ay + ((by - ay) * t) / n;
-            box(cx - h, cx + h, cy - h, cy + h, b, c);
-          }
-        };
-        for (const s of shapes) box(g(s.x), g(s.x + s.w), g(s.y), g(s.y + s.h), s.b, s.c);
-        for (const s of strokes) sweep(g(s.x0), g(s.y0), g(s.x1), g(s.y1), s.size * k, s.b, s.c);
-        if (cursor && !locked() && pen.kind !== 'eraser' && !pointer.dragging()) sweep(g(cursor[0]), g(cursor[1]), g(cursor[0]), g(cursor[1]), pen.size, pen.brightness, COLOURS[pen.colour]);
+        const preview = cursor && !locked() && pen.kind !== 'eraser' && !pointer.dragging();
+        const m = preview ? { b: pen.brightness, c: COLOURS[pen.colour] } : null;
+        cover(N, { shapes, strokes, cursor: m && { x: cursor[0], y: cursor[1], size: pen.size, m }, snap: raster.snap }, (i, { b, c }) => {
+          ((E[3 * i] = b * c[0]), (E[3 * i + 1] = b * c[1]), (E[3 * i + 2] = b * c[2]), (A[i] = 0));
+        });
       }
 
       // Pen and shape inspector. A material is a brightness (luminance of its radiance) and a colour; the kinds only set the

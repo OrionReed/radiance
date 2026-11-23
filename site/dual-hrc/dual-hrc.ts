@@ -18,6 +18,7 @@
 // source group and level l ≥ 1 (level l, source group c at (l − 1) P.rIn + c N²).
 
 import type { Profiler, Traffic } from '../_shared/profiler';
+import { staging } from '../_shared/upload';
 
 export type Form = 'primal' | 'dual';
 export interface DualOptions {
@@ -1110,11 +1111,14 @@ export class DualHRC {
   }
 
   /** The scene planes (on the CPU), the source groups and their tables, and the dispatch list. */
+  #staging = staging();
   upload(scene: DualScene) {
     const NN = this.N * this.N;
-    const planes = new Float32Array(6 * NN);
+    const planes = this.#staging(6 * NN);
     const E = planes.subarray(0, NN), AP = planes.subarray(NN, 2 * NN), AD = planes.subarray(2 * NN, 3 * NN);
     const DIR = planes.subarray(3 * NN, 4 * NN), HALF = planes.subarray(4 * NN, 5 * NN), LOBE = planes.subarray(5 * NN, 6 * NN);
+    E.fill(0);
+    DIR.fill(0);
     const sdir = scene.spotDir ?? new Float32Array(NN), shalf = scene.spotHalf ?? new Float32Array(NN).fill(-1);
     const beamIds = new Map<string, number>();
     this.lobes = [];

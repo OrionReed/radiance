@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Line field</title>
+    <meta name="description" content="Plain Reciprocal HRC drawn as lines, not pixels: every ray of every cascade is a vector line carrying its own value. Run the up and down passes over any range of cascades, light single lines, and compare the summed lines with the exact falloff." />
+    <meta name="section" content="visualisations" />
+    <link rel="stylesheet" href="../_shared/page.css" />
+    <style>
+      body { grid-template-columns: 260px minmax(0, 1fr) 340px; }
+      #canvas-area { display: grid; place-items: center; padding: 14px; }
+      #view { width: min(100%, calc(100vh - 28px)); aspect-ratio: 1; display: block; cursor: crosshair; background: #000; }
+      #right { border-left: 1px solid var(--line); }
+      .seg.strip button { padding-left: 0; padding-right: 0; }
+      .seg.strip button.end { flex: 0 0 auto; min-width: 40px; padding: 0 6px; }
+      .disabled { opacity: 0.4; pointer-events: none; }
+      #stack-wrap { position: relative; }
+      #stack-grid { display: grid; grid-template-columns: 1fr; gap: 3px; }
+      .tile { cursor: crosshair; position: relative; }
+      .tile .name { position: absolute; left: 6px; top: 4px; z-index: 1; pointer-events: none; color: var(--dim); font-size: 11px; display: flex; gap: 6px; text-shadow: 0 0 3px #000, 0 0 3px #000; }
+      .tile .name b { font-weight: 500; color: var(--text); }
+      .tile .sq { aspect-ratio: 1; border: 1px solid var(--line); }
+      .tile.on .sq { border-color: var(--faint); }
+      .tile.focus .sq { border-color: var(--accent); }
+      #stack { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+      #focus { font-family: var(--mono); font-size: 11px; color: var(--dim); white-space: pre; line-height: 1.5; }
+      #focus b { color: var(--text); font-weight: 500; }
+      .inject { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+      .inject input { width: 64px; background: var(--ctl); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; font: inherit; }
+      .inject .seg { flex: 1; }
+      #injections { font-family: var(--mono); font-size: 11px; color: var(--faint); white-space: pre; margin-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <aside id="left">
+      <section>
+        <h2>line field</h2>
+        <p class="hint">Plain Reciprocal HRC, every row offset, no Wu split, drawn as lines: each ray of each cascade is
+          one line carrying its own value.</p>
+        <div id="scene"></div>
+      </section>
+      <section>
+        <h2>passes</h2>
+        <div id="passes"></div>
+      </section>
+      <section>
+        <h2>lines</h2>
+        <div id="lines"></div>
+      </section>
+      <section>
+        <h2>view</h2>
+        <div id="viewc"></div>
+      </section>
+    </aside>
+
+    <div id="canvas-area"><canvas id="view"></canvas></div>
+
+    <aside id="right">
+      <section>
+        <h2>focus</h2>
+        <div id="focus"></div>
+        <div class="inject" id="inject">
+          <input id="inj-value" type="number" value="1" step="0.1" title="the value to add" />
+          <div class="seg"><button id="inj-r" title="add to its R as the extension computes it">light R</button><button id="inj-g" title="add to its M as the merge computes it">light M</button></div>
+        </div>
+        <div id="injections"></div>
+        <div class="seg" style="margin-top:6px"><button id="inj-clear" title="remove every lit line">clear lit lines</button></div>
+      </section>
+      <section>
+        <h2>cascades</h2>
+        <div id="stack-wrap"><div id="stack-grid"></div><canvas id="stack"></canvas></div>
+      </section>
+    </aside>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -142,6 +142,7 @@
       // Scenes are rectangles in scene units, rasterised on the CPU; ./dual.ts solves them.
       import { DualHRC } from './dual';
       import { scenesFor, SPAN } from '../_shared/scenes';
+      import { paint } from '../_shared/raster';
       import { Reference } from '../_shared/reference';
       import { Profiler } from '../_shared/profiler';
       import { DISPLAY_WGSL, EXPOSURE, MAP_INDEX } from '../_shared/display';
@@ -196,31 +197,8 @@
       // one pixel thick.
       let emission = null, solid = null, cursor = null;
       function rasterise(N) {
-        emission.fill(0);
-        solid.fill(0);
-        const scale = N / SPAN, toPixels = (u) => (u + SPAN / 2) * scale;
-        const put = (gx, gy, m) => {
-          if (gx < 0 || gy < 0 || gx >= N || gy >= N) return;
-          const i = gx * N + (N - 1 - gy);
-          solid[i] = 1;
-          emission.set(m.b > 0 ? m.rgb : [0, 0, 0], 3 * i);
-        };
-        const widen = (a, b) => (b - a >= 1 ? [a, b] : [(a + b) / 2 - 0.5, (a + b) / 2 + 0.5]);
-        const box = (x0, x1, y0, y1, m) => {
-          [[x0, x1], [y0, y1]] = [widen(x0, x1), widen(y0, y1)];
-          const first = (a) => Math.ceil(a - 0.5);
-          for (let x = first(x0); x < first(x1); x++) for (let y = first(y0); y < first(y1); y++) put(x, y, m);
-        };
-        const sweep = (ax, ay, bx, by, size, m) => {
-          const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) * 4)), h = size / 2;
-          for (let t = 0; t <= n; t++) {
-            const cx = ax + ((bx - ax) * t) / n, cy = ay + ((by - ay) * t) / n;
-            box(cx - h, cx + h, cy - h, cy + h, m);
-          }
-        };
-        for (const s of shapes) box(toPixels(s.x), toPixels(s.x + s.w), toPixels(s.y), toPixels(s.y + s.h), s);
-        for (const s of strokes) sweep(toPixels(s.x0), toPixels(s.y0), toPixels(s.x1), toPixels(s.y1), s.size * scale, s);
-        if (cursor && !locked() && pen.kind !== 'eraser' && !pointer.dragging()) sweep(toPixels(cursor[0]), toPixels(cursor[1]), toPixels(cursor[0]), toPixels(cursor[1]), pen.size, penMaterial());
+        const preview = cursor && !locked() && pen.kind !== 'eraser' && !pointer.dragging();
+        paint(N, { emission, solid }, { shapes, strokes, cursor: preview ? { x: cursor[0], y: cursor[1], size: pen.size, m: penMaterial() } : null });
       }
 
       // pen and shape inspector

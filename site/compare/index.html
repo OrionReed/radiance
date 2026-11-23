@@ -319,7 +319,8 @@
       import { PolygonalHRC } from '../polygonal-hrc/polygonal-hrc.js';
       import { Reference } from '../_shared/reference';
       import { DISPLAY_WGSL, EXPOSURE, EXPOSURE_CONTROL, MAP_CONTROL, MAP_INDEX } from '../_shared/display';
-      import { scenesFor, SPAN } from '../_shared/scenes';
+      import { scenesFor } from '../_shared/scenes';
+      import { cover } from '../_shared/raster';
 
       const $ = (id) => document.getElementById(id);
       const el = (tag, props = {}, ...children) => {
@@ -417,18 +418,7 @@
       // their centres (at least one pixel thick); every scheme reads it as it is
       function rasterise(N) {
         const S = new Float32Array(N * N), T = new Float32Array(N * N).fill(1);
-        const k = N / SPAN, g = (u) => (u + SPAN / 2) * k;
-        const widen = (a, b) => (b - a >= 1 ? [a, b] : [(a + b) / 2 - 0.5, (a + b) / 2 + 0.5]);
-        const first = (a) => Math.ceil(a - 0.5);
-        for (const sh of scenes[currentScene].shapes) {
-          const [[x0, x1], [y0, y1]] = [widen(g(sh.x), g(sh.x + sh.w)), widen(g(sh.y), g(sh.y + sh.h))];
-          for (let x = first(x0); x < first(x1); x++)
-            for (let y = first(y0); y < first(y1); y++) {
-              if (x < 0 || y < 0 || x >= N || y >= N) continue;
-              const i = x * N + (N - 1 - y);
-              ((S[i] = sh.brightness), (T[i] = 0));
-            }
-        }
+        cover(N, { shapes: scenes[currentScene].shapes }, (i, sh) => ((S[i] = sh.brightness), (T[i] = 0)));
         return { S, T };
       }
 

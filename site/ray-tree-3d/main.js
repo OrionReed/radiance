@@ -6,6 +6,7 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { Tree, SCHEMES, toLocal, toWorld, localLine, linePixels, lineJoins, forkShare } from './tree.js';
 import { PRESETS } from './presets.js';
+import { arrangement, LINE_BUCKETS, bucketOf, FACE_COLOURS } from './lattice.js';
 
 const LEVEL_COLORS = ['#f0f0f0', '#ff8a5c', '#ffd166', '#9be564', '#4ed8c9', '#5aa9ff', '#a98bff', '#ff7ac6', '#c8c8a0', '#9adfff'];
 const HL = {
@@ -24,6 +25,7 @@ const DEFAULTS = {
   desc: true, anc: false, light: false, tri: true,
   line: false, ax: 0.3, ay: 6.37, bx: 31.7, by: 19.13, shift: 0, lTiles: true, lReads: false, lAll: false, lTri: true, viewIdx: -1,
   rx: 20, ry: 16, sx: 5, sy: 12, foot: false, pair: false, click: 'ray', pTri: false, triColor: 'error',
+  lsheet: 'stack', lcross: true, lface: true, llink: false, ledge: true, lmin: 2,
 };
 const S = { ...DEFAULTS };
 {
@@ -38,7 +40,10 @@ function writeURL() {
 }
 const hidden = () => new Set(S.hide ? S.hide.split(',').map(Number) : []);
 const shown = (n) => !hidden().has(n);
-const worldRep = () => S.rep === 'joins' || S.rep === 'stacked';
+const worldRep = () => S.rep === 'joins' || S.rep === 'stacked' || S.rep === 'plotter';
+const plotter = () => S.rep === 'plotter';
+/** a level's sheet height in layers mode */
+const sheetZ = (n) => (S.lsheet === 'union' ? 0 : n * 0.8 * S.N * S.zs);
 const schemesOf = () => (S.b === 'none' || S.b === S.a ? [S.a] : [S.a, S.b]);
 const frustaList = () => ({ 0: [0], 1: [1], 2: [2], 3: [3], x: [0, 1], all: [0, 1, 2, 3] })[S.fr];
 function clampToN() {
@@ -94,8 +99,9 @@ function makePanels() {
     const label = Object.assign(document.createElement('div'), { className: 'plabel', textContent: SCHEMES[scheme] });
     area.appendChild(label);
     const hl = new THREE.Group(), overlay = new THREE.Group(), floor = new THREE.Group();
-    scene.add(hl, overlay, floor);
-    return { scheme, scene, pickScene, label, hl, overlay, floor, base: null, pick: null, vis: null, weights: {}, stats: [] };
+    const lat = new THREE.Group();
+    scene.add(hl, overlay, floor, lat);
+    return { scheme, scene, pickScene, label, hl, overlay, floor, lat, latStats: [], base: null, pick: null, vis: null, weights: {}, stats: [] };
   });
 }
 
@@ -113,6 +119,7 @@ const R = { n: 0, L: 1, j: 0, d: 0, y: 0, s: 1, f: 0, w: 0, x: 0, wy: 0, u: 0, v
 function zAt(t, n, L, j, d, y, f, wx, wy, u, v, w, tt) {
   const g = G(), k = (g * (t.top + 1)) / S.N;
   if (S.rep === 'joins') return t.joinAt(u) * g;
+  if (S.rep === 'plotter') return sheetZ(n);
   switch (S.z) {
     case 'length': return L * k;
     case 'depth': return (u - j * L) * k;
@@ -252,7 +259,9 @@ function buildBase(P) {
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
   geo.setAttribute('pid', new THREE.BufferAttribute(pid, 1));
-  const common = { vertexColors: true, transparent: true, opacity: baseOpacity(P), depthWrite: false, blending: S.additive ? THREE.AdditiveBlending : THREE.NormalBlending };
+  const common = plotter()
+    ? { vertexColors: true, transparent: true, opacity: Math.max(0.6, baseOpacity(P)), depthWrite: false, blending: THREE.NormalBlending }
+    : { vertexColors: true, transparent: true, opacity: baseOpacity(P), depthWrite: false, blending: S.additive ? THREE.AdditiveBlending : THREE.NormalBlending };
   if (P.base) { P.scene.remove(P.base); P.pickScene.remove(P.pick); P.base.geometry.dispose(); P.base.material.dispose(); }
   P.base = pts ? new THREE.Points(geo, new THREE.PointsMaterial({ ...common, size: S.pt, sizeAttenuation: false })) : new THREE.LineSegments(geo, new THREE.LineBasicMaterial(common));
   P.pick = pts ? new THREE.Points(geo, pickMat) : new THREE.LineSegments(geo, pickMat);
@@ -587,6 +596,105 @@ function buildFloor(P) {
   }
 }
 
+// ── layers: each level a flat line drawing, its crossings, its faces and links to the next level ──
+const latCache = new Map();
+/** the drawn rays of some levels (every frustum shown) and, if on, their block edges: [x0, y0, x1, y1, isEdge] */
+function sheetSegments(P, levels) {
+  const segs = [];
+  for (const f of frustaList()) {
+    const t = treeOf(P, f);
+    forEachVisible(t, f, (id, n) => {
+      if (!levels.includes(n)) return;
+      const [u0, v0, u1, v1] = t.segment(id), [ax, ay] = toWorld(t.W, t.scheme, f, u0, v0), [bx, by] = toWorld(t.W, t.scheme, f, u1, v1);
+      segs.push([ax, ay, bx, by, false]);
+    });
+    if (S.ledge)
+      for (const n of levels) {
+        const l = t.lv[n], us = new Set();
+        for (const x of l.xs) { us.add(x); us.add(x + l.L); }
+        for (const u of us) segs.push([...toWorld(t.W, t.scheme, f, u, 0.5), ...toWorld(t.W, t.scheme, f, u, S.N - 0.5), true]);
+      }
+  }
+  return segs;
+}
+function sheetOf(P, levels) {
+  const key = [P.scheme, S.N, S.fr, S.y0, S.rows, S.stride, S.block, S.col, S.rises, S.clip, S.ledge, S.lface, levels.join('.')].join('|');
+  if (!latCache.has(key)) {
+    if (latCache.size > 40) latCache.clear();
+    const segs = sheetSegments(P, levels);
+    latCache.set(key, { segs, ...arrangement(segs, { faces: S.lface }) });
+  }
+  return latCache.get(key);
+}
+function buildLattice(P) {
+  P.latStats = [];
+  if (!plotter()) return;
+  if (S.N > 32) { P.latStats.push('layers: crossings and faces are computed for N ≤ 32'); return; }
+  const top = treeOf(P, frustaList()[0]).top, lv = [...Array(top + 1).keys()].filter(shown);
+  const groups = S.lsheet === 'union' ? [lv] : lv.map((n) => [n]);
+  const h = S.N / 2, g = G(), sheets = groups.map((levels) => ({ levels, z: S.lsheet === 'union' ? 0 : sheetZ(levels[0]), ...sheetOf(P, levels) }));
+  for (const sh of sheets) {
+    const { segs, points, faces, z, levels } = sh;
+    if (S.ledge) {
+      const pos = [];
+      for (const [x0, y0, x1, y1, e] of segs) if (e) pos.push(x0 - h, y0 - h, z, x1 - h, y1 - h, z);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      P.lat.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x808080, transparent: true, opacity: 0.5, depthWrite: false })));
+    }
+    const types = {};
+    if (S.lface) {
+      const pos = [], col = [];
+      for (const c of faces) {
+        const k = Math.min(5, c.length), rgbF = rgb(FACE_COLOURS[k]);
+        types[k] = (types[k] || 0) + 1;
+        for (let i = 1; i + 1 < c.length; i++)
+          for (const q of [c[0], c[i], c[i + 1]]) { pos.push(q[0] - h, q[1] - h, z - g * 0.002); col.push(...rgbF); }
+      }
+      if (pos.length) P.lat.add(mesh(pos, col, 0.3));
+    }
+    const byLines = {};
+    for (const p of points) if (p.lines.size >= 2) byLines[p.lines.size] = (byLines[p.lines.size] || 0) + 1;
+    if (S.lcross) {
+      const buckets = LINE_BUCKETS.map(() => []);
+      for (const p of points) if (p.lines.size >= Math.max(2, S.lmin)) buckets[bucketOf(p.lines.size)].push(p.x - h, p.y - h, z + g * 0.002);
+      buckets.forEach((pos, b) => {
+        if (!pos.length) return;
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        const o = new THREE.Points(geo, new THREE.PointsMaterial({ color: LINE_BUCKETS[b][2], size: 2 + 0.9 * b, sizeAttenuation: false, depthTest: false, transparent: true }));
+        o.renderOrder = 12;
+        P.lat.add(o);
+      });
+    }
+    const nRays = segs.filter((s) => !s[4]).length;
+    const L = levels.map((n) => P.tree.lv[n].L).join(', ');
+    P.latStats.push(`<b>${levels.length > 1 ? `levels ${levels.join(', ')}` : `level ${levels[0]}`}</b> (length ${L}) · ${nRays} rays`,
+      `  crossings by lines through them: ${Object.entries(byLines).map(([k, v]) => `${k}: ${v}`).join(' · ') || 'none'}`,
+      ...(S.lface ? [`  faces by corners: ${Object.entries(types).map(([k, v]) => `${k === '5' ? '5+' : k}: ${v}`).join(' · ')}`] : []));
+  }
+  if (S.llink && S.lsheet !== 'union')
+    for (let i = 0; i + 1 < sheets.length; i++) {
+      const A = sheets[i], B = sheets[i + 1], next = new Map(B.points.map((p) => [p.key, p.lines.size]));
+      const pos = [], col = [], keep = rgb(HL.on), lost = rgb(HL.off);
+      let kept = 0, all = 0;
+      for (const p of A.points) {
+        if (p.lines.size < Math.max(2, S.lmin)) continue;
+        const ok = (next.get(p.key) ?? 0) >= 2;
+        all++; if (ok) kept++;
+        pos.push(p.x - h, p.y - h, A.z, p.x - h, p.y - h, B.z);
+        col.push(...(ok ? keep : lost), ...(ok ? keep : lost));
+      }
+      if (pos.length) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+        P.lat.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.45, depthWrite: false })));
+      }
+      P.latStats.push(`  level ${A.levels[0]} → ${B.levels[0]}: ${kept} of ${all} crossings are crossings one level up`);
+    }
+}
+
 // ── overlay: user geometry ──
 let overlayCode = '';
 function runOverlay(P) {
@@ -649,11 +757,12 @@ function rebuild({ base = true, reframe = false } = {}) {
     const weighted = S.color === 'weight' || (S.rep === 'stacked' && S.z === 'weight');
     for (const P of panels) {
       P.tree = treeOf(P, 0);
-      for (const g of [P.hl, P.floor, P.overlay]) { g.traverse((o) => { o.geometry?.dispose(); o.material?.dispose?.(); }); g.clear(); }
+      for (const g of [P.hl, P.floor, P.overlay, P.lat]) { g.traverse((o) => { o.geometry?.dispose(); o.material?.dispose?.(); }); g.clear(); }
       buildTraces(P);
       if (base || weighted || !P.base) buildBase(P);
       else P.base.material.opacity = baseOpacity(P);
       buildFloor(P);
+      buildLattice(P);
       runOverlay(P);
     }
     if (pendingFrame) { pendingFrame = false; frame(); }
@@ -678,9 +787,11 @@ function layout() {
 function frame(top = false) {
   const N = S.N, g = G(), levels = LEVELS - 1;
   const tg = S.rep === 'lines' ? [S.fr === 'all' || S.fr === '2' || S.fr === '3' ? 0.65 * N : 0, 0, (g * levels) / 2] : S.rep === 'linecol' ? [0, 0, (N * S.zs) / 2] : [0, 0, top ? 0 : (g * levels) / 2];
+  if (plotter()) { if (S.lsheet === 'union') top = true; tg[2] = top ? 0 : sheetZ(levels) / 2; }
   controls.target.set(...tg);
   const dir = top ? new THREE.Vector3(0, -0.001, 1) : S.rep === 'lines' ? new THREE.Vector3(0.1, -0.5, 1) : new THREE.Vector3(-0.15, -1, 0.75);
-  const asp = Number.isFinite(aspect) && aspect > 0.05 ? aspect : 1, dist = 1.9 * N * Math.max(1, 1.1 / asp);
+  const asp = Number.isFinite(aspect) && aspect > 0.05 ? aspect : 1;
+  const dist = plotter() && !top ? N * Math.max(0.97 * levels * S.zs + 0.9, 1.8 / asp) : 1.9 * N * Math.max(1, 1.1 / asp);
   camera.position.copy(controls.target).addScaledVector(dir.normalize(), dist);
   if (camera === ortho) { ortho.zoom = 1; setOrthoExtent(dist * Math.tan((persp.fov * Math.PI) / 360)); }
   controls.update();
@@ -826,7 +937,7 @@ const SCHEME_OPTS = [['hrc', 'HRC'], ['rec1', 'Recip 1×', 'Reciprocal HRC, base
 }
 {
   const s = section(left, 'representation');
-  seg(s, '', 'rep', [['joins', 'joins', 'each column at its join level: rays climb from where their halves meet'], ['stacked', 'stacked', 'each level flat at its own height'], ['lines', 'line space', 'each ray at its central line (slope, offset)'], ['linecol', 'line + column', 'each ray over its central line, height = column along the frustum axis']], { kind: 'frame', cols: 2 });
+  seg(s, '', 'rep', [['joins', 'joins', 'each column at its join level: rays climb from where their halves meet'], ['stacked', 'stacked', 'each level flat at its own height'], ['lines', 'line space', 'each ray at its central line (slope, offset)'], ['linecol', 'line + column', 'each ray over its central line, height = column along the frustum axis'], ['plotter', 'layers', 'each level a flat line drawing, orthographic: crossings, faces and how levels relate']], { kind: 'frame', cols: 2 });
   seg(s, 'height (stacked)', 'z', [['level', 'level'], ['length', 'length'], ['depth', 'depth', 'distance along the ray from its start'], ['leveldepth', 'lvl + depth', 'level, rising along the ray'], ['dist', 'distance', 'distance to the pixel set under pixels'], ['weight', 'weight', 'log of the active trace weight'], ['custom', 'custom']], { cols: 4, enabled: () => S.rep === 'stacked' });
   const zi = el('input', { value: S.zexpr, title: 'fields n L j d y s f w x wy u v slope; t along the ray' });
   Object.assign(zi.style, { width: '100%', background: 'var(--ctl)', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: '4px', font: '11px var(--mono)', padding: '3px 5px' });
@@ -835,7 +946,21 @@ const SCHEME_OPTS = [['hrc', 'HRC'], ['rec1', 'Recip 1×', 'Reciprocal HRC, base
   syncs.push(() => zf.classList.toggle('disabled', !(S.rep === 'stacked' && S.z === 'custom')));
   seg(s, 'line chart (line space)', 'chart', [['centre', 'offset at centre'], ['column', 'at column', 'the offset measured at the filter column'], ['hough', 'angle, dist.', 'Hough: angle θ and distance ρ from the centre']], { enabled: () => !worldRep() });
   slider(s, 'height scale', 'zs', { min: 0.1, max: 4, step: 0.05, kind: 'frame', fmt: (v) => v.toFixed(2) });
-  seg(s, 'camera', 'cam', [['persp', 'perspective'], ['ortho', 'orthographic']], { kind: 'none' });
+  seg(s, 'camera', 'cam', [['persp', 'perspective'], ['ortho', 'orthographic']], { kind: 'none', enabled: () => !plotter() });
+}
+{
+  const s = section(left, 'layers', 'representation: layers');
+  const on = plotter;
+  seg(s, 'sheets', 'lsheet', [['stack', 'one per level'], ['union', 'all on one', 'every shown level drawn on one sheet']], { kind: 'frame', enabled: on });
+  toggle(s, 'crossings, coloured by lines through them', 'lcross', { enabled: on });
+  slider(s, 'fewest lines at a crossing shown', 'lmin', { min: 2, max: () => 2 * S.N + 1, enabled: on });
+  toggle(s, 'faces, coloured by corners', 'lface', { enabled: on });
+  toggle(s, 'block edges', 'ledge', { enabled: on, title: 'drawn and part of the arrangement: faces beside a block edge close on it' });
+  toggle(s, 'links to the next level', 'llink', { enabled: () => on() && S.lsheet !== 'union', title: 'a pin from each crossing to the same point one level up: green, a crossing there too; red, not' });
+  const lg = el('div', { className: 'legend' });
+  lg.innerHTML = LINE_BUCKETS.map(([lo, hi, c]) => `<span><i style="background:${c}"></i>${lo === hi ? lo : hi > 1e8 ? `${lo}+` : `${lo}–${hi}`}</span>`).join('')
+    + Object.entries(FACE_COLOURS).map(([k, c]) => `<span><i style="background:${c};opacity:.6"></i>${k === '5' ? '5+' : k} corners</span>`).join('');
+  s.append(lg);
 }
 {
   const s = section(left, 'levels', 'click to hide');
@@ -951,6 +1076,7 @@ const GUIDE = {
   line: `<p><b>Line ℓ</b> is one straight line of the scene. Each block holds it in exactly one ray per level, the ray whose line tile contains ℓ. A selected ray shows one ray's family; ℓ shows the one ray per block that carries ℓ, whichever ray you picked: green where it is a half of ℓ's ray one level up, red where it is not. Pink rays are what the pixels on ℓ actually read for ℓ's direction, which need not be ℓ's own rays.</p>`,
   fib: `<p><b>Fibonacci tree.</b> Lengths are 1, 2, 3, 5, 8, …, up to a frame at least N wide (the frame runs past the scene). A node of length F<sub>k</sub> splits at F<sub>k−1</sub>, the long piece first (light toward −x or −y: the mirrored tree, so the same columns split). The junction row is not a whole row: the ray's centre line crosses the junction at θd (θ = F<sub>k−1</sub>/F<sub>k</sub>), so the ray is two chains, via the row below with weight 1 − f and via the row above with weight f (f the fraction of θd). Its extension triangles are those two chains; nodes of one length do not tile the frame.</p>`,
   forks: `<p><b>Forks.</b> A ray of odd rise has two bent pairs of halves: two triangles on one top edge whose inner corners are a row apart. A straight line passes through only one of them, but plain gives each half the far light. With "route triangles" on, "fork share" colours each fork triangle by the light plain gives it beyond its geometric share (orange: too much, blue: too little), and "fork error" by what that does to the pixel, to first order (orange: too bright, blue: too dark).</p>`,
+  plotter: `<p><b>Layers.</b> Each level is a flat line drawing, seen orthographically: every ray of the frustum, probe to probe. The rays of one block cut it into <b>faces</b>; each face is a triangle or a quadrilateral (block edges included). A face is the set of points that every rise puts between the same two rays. <b>Crossings</b> lie on the columns at fractions p/m of the block (lowest terms, m ≤ 2L), spaced 1/m of a row apart. The rays through a crossing are those whose rise is in one class mod m, about (2L + 1)/m of them. Junction probes, at the block's middle column, have the most (L + 1); pixel centres lie on the flat ray only. A level's rays are the halves of the next level's even-rise rays, so its crossings are the next level's crossings too, except near the top and bottom rows, where the next level's rays leave the grid.</p>`,
   model: `<p class="hint">Index arithmetic as on the HRC and Reciprocal HRC pages. Traces are free space (transmittance 1). Rays whose start row is off the grid are left out.</p>`,
 };
 function writeReadout() {
@@ -958,11 +1084,11 @@ function writeReadout() {
   for (const P of panels) {
     const v = P.vis;
     if (P.ray.length) selParts.push(`<b>${SCHEMES[P.scheme]}</b>\n${P.ray.join('\n')}`);
-    rest.push([`<b>${SCHEMES[P.scheme]}</b> ${P.tree.total.toLocaleString()} rays per frustum · ${v.shown.toLocaleString()} drawn${v.keepEvery > 1 ? ` (1 in ${v.keepEvery})` : ''}`, ...P.stats].join('\n'));
+    rest.push([`<b>${SCHEMES[P.scheme]}</b> ${P.tree.total.toLocaleString()} rays per frustum · ${v.shown.toLocaleString()} drawn${v.keepEvery > 1 ? ` (1 in ${v.keepEvery})` : ''}`, ...P.latStats, ...P.stats].join('\n'));
   }
   selInfo.innerHTML = sel ? selParts.join('\n\n') : '<span style="color:var(--faint)">none</span>';
   readout.innerHTML = rest.join('\n\n');
-  guide.innerHTML = GUIDE[S.rep] + GUIDE.passes + (schemesOf().includes('fib') ? GUIDE.fib : '') + (S.line ? GUIDE.line : '') + (S.pair && S.pTri ? GUIDE.forks : '') + GUIDE.model;
+  guide.innerHTML = GUIDE[S.rep] + (plotter() ? '' : GUIDE.passes) + (schemesOf().includes('fib') ? GUIDE.fib : '') + (S.line ? GUIDE.line : '') + (S.pair && S.pTri ? GUIDE.forks : '') + GUIDE.model;
 }
 
 /** POST to a shot server when one is given (scripted captures), else download */
@@ -974,7 +1100,7 @@ async function saveShot(name, url) {
 }
 
 new ResizeObserver(layout).observe(area);
-syncs.push(() => useCamera(S.cam));
+syncs.push(() => useCamera(plotter() ? 'ortho' : S.cam));
 clampToN();
 makePanels();
 layout();

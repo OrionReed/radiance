@@ -15,6 +15,8 @@
 // The path tracer adds samples every frame. The exact reference integrates M directions per pixel by the trapezoid rule,
 // finding each jump between pixels by bisection, in background chunks that refine in place.
 
+import { staging } from './upload';
+
 const WORKGROUP = 8;
 
 /** Gauss–Legendre points and weights on [0, 1] */
@@ -241,13 +243,14 @@ export class Reference {
   }
 
   /** A new scene: both references start again. The same scene again changes nothing. */
+  #zeros = staging();
   upload(S: Float32Array, A: Float32Array) {
     if (this.#last && same(this.#last.S, S) && same(this.#last.A, A)) return;
     this.#last = { S: S.slice(), A: A.slice() };
     const q = this.device.queue;
     q.writeBuffer(this.#S, 0, S as Float32Array<ArrayBuffer>);
     q.writeBuffer(this.#A, 0, A as Float32Array<ArrayBuffer>);
-    const zeros = new Float32Array(this.N * this.N);
+    const zeros = this.#zeros(this.N * this.N);   // never written
     for (const b of [this.pathTraceOutput, this.exactOutput, this.#acc]) q.writeBuffer(b, 0, zeros);
     this.pathTraceFrames = 0;
     this.#generation++;

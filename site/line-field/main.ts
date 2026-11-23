@@ -1,5 +1,5 @@
 import { $, el, createControls, writeControls, readControls } from '../_shared/ui';
-import { exactAt, relatives, solve, STRIDE, type Injection, type Solution } from './lines';
+import { boxesOf, exactAt, exactOccludedAt, relatives, solve, STRIDE, type Box, type Injection, type Rule, type Solution } from './lines';
 
 // ── rendering: lines summed into a float buffer, then shown; one Renderer per canvas ──
 
@@ -12,6 +12,10 @@ interface Pass {
   extMode: number; mergeMode: number;
   profile: number; width: number; alongW: number; alongV: number;
   gain: number;
+  /** the weight of guard rays (steeper than 45°, cone weight 0): 0 hides them */
+  guardGain: number;
+  /** the fluence above which a pixel in full shadow (reference 0) counts as leak */
+  leak: number;
   mode: number; // 0 lines, 1 pixels, 2 exact, 3 lines ÷ exact, 4 pixels ÷ exact, 5 coverage
   tone: number; top: number; grid: number; coverageNorm: number; latticeMask: number;
   /** 0: the continuous field; 1: each image pixel's mean over RASTER² samples; 2: its centre */
@@ -27,18 +31,20 @@ layout(location = 1) in vec4 seg;
 layout(location = 2) in vec4 vals;  // M, M at end, c·R, cone weight c
 layout(location = 3) in vec2 meta;  // level, frustum
 layout(location = 4) in vec2 rt;    // R, T
+layout(location = 5) in float guard; // 1: a guard ray, steeper than 45°
 uniform vec4 view;                  // x0, y0, span, world units per device pixel
 uniform int extMask, mergeMask, latticeMask, frustumMask, profile;
-uniform float width;
+uniform float width, guardGain;     // guard rays' weight: 0 hides them
 out float vT, vPerp;
-flat out float vCos;
+flat out float vCos, vGain;
 flat out vec4 vVals;
 flat out vec2 vRT;
 flat out int vExt, vMerge, vLat;
 void main() {
   int lv = int(meta.x + 0.5), fr = int(meta.y + 0.5);
   int ext = (extMask >> lv) & 1, merge = (mergeMask >> lv) & 1, lat = (latticeMask >> lv) & 1;
-  if (ext + merge + lat == 0 || ((frustumMask >> fr) & 1) == 0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  vGain = guard > 0.5 ? guardGain : 1.0;
+  if (ext + merge + lat == 0 || ((frustumMask >> fr) & 1) == 0 || vGain == 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   vec2 d = seg.zw - seg.xy, dir = normalize(d), n = vec2(-dir.y, dir.x);
   float c = max(abs(dir.x), abs(dir.y));
   float halfW = profile == 3 ? 1.5 * view.w : 0.5 * width * c + view.w;
@@ -57,7 +63,7 @@ uniform int profile, extMode, mergeMode, alongW, alongV;
 uniform float width, gain;
 uniform vec4 view;
 in float vT, vPerp;
-flat in float vCos;
+flat in float vCos, vGain;
 flat in vec4 vVals;
 flat in vec2 vRT;
 flat in int vExt, vMerge, vLat;
@@ -74,8 +80,8 @@ void main() {
   float weight = alongV == 1 ? 2.0 * tent : 1.0;
   float extV = extMode == 0 ? vRT.x : extMode == 1 ? vRT.y : vVals.z;
   float mergeV = mergeMode == 0 ? vVals.x : mergeMode == 1 ? vVals.y : mix(vVals.x, vVals.y, t);
-  float val = float(vExt) * extV + float(vMerge) * mergeV;
-  float lattice = 0.6 * float(vLat) * max(0.0, 1.0 - abs(vPerp) / view.w);
+  float val = vGain * (float(vExt) * extV + float(vMerge) * mergeV);
+  float lattice = 0.6 * vGain * float(vLat) * max(0.0, 1.0 - abs(vPerp) / view.w);
   o = vec4(gain * weight * prof * val, gain * weight * prof * vVals.w, lattice, 1.0);
 }`;
 
@@ -88,7 +94,7 @@ precision highp int;
 uniform sampler2D accum, pix, exact, raster;
 uniform int rasterMode, S;
 uniform vec4 view, vp;
-uniform float N, top, coverageNorm;
+uniform float N, top, coverageNorm, leak;
 uniform int mode, tone, grid;
 uniform vec2 selPix; // the focused pixel (x < 0: none)
 out vec4 o;
@@ -97,6 +103,30 @@ vec3 ratioColour(float r) {
   float s = clamp(log(r) / log(1.25), -1.0, 1.0);
   vec3 base = vec3(0.13);
   return s > 0.0 ? mix(base, vec3(1.0, 0.3, 0.2), s) : mix(base, vec3(0.25, 0.5, 1.0), -s);
+}
+// light reaching a pixel the reference has in full shadow: green, brighter with more of it
+vec3 leakColour(float v) {
+  float s = clamp(log(v / leak) / log(100.0), 0.0, 1.0);
+  return mix(vec3(0.1, 0.35, 0.15), vec3(0.35, 1.0, 0.45), s);
+}
+// the error views: masked inside solids (reference < 0), leak or dark in full shadow (reference 0), else the ratio
+vec3 errorColour(float v, float ex) {
+  if (ex < 0.0) return vec3(0.0);
+  if (ex == 0.0) return v > leak ? leakColour(v) : vec3(0.0);
+  return ratioColour(v / ex);
+}
+// the reference, bilinear over the texels outside the solids (whose texels hold -1); -1 where all four are inside
+float exactAt(vec2 w) {
+  ivec2 sz = textureSize(exact, 0);
+  vec2 t = w / N * vec2(sz) - 0.5, f = fract(t);
+  ivec2 i0 = ivec2(floor(t));
+  float sum = 0.0, wsum = 0.0;
+  for (int j = 0; j < 2; j++) for (int i = 0; i < 2; i++) {
+    float v = texelFetch(exact, clamp(i0 + ivec2(i, j), ivec2(0), sz - 1), 0).r;
+    float k = (i == 1 ? f.x : 1.0 - f.x) * (j == 1 ? f.y : 1.0 - f.y);
+    if (v >= 0.0) { sum += k * v; wsum += k; }
+  }
+  return wsum > 0.0 ? sum / wsum : -1.0;
 }
 vec3 toneMap(float v) {
   float t = tone == 1 ? 1.0 + log2(max(v, 1e-30) / top) / 10.0 : pow(clamp(v / top, 0.0, 1.0), 1.0 / 2.2);
@@ -123,13 +153,13 @@ void main() {
     }
   }
   vec2 px = texelFetch(pix, ivec2(floor(w)), 0).rg;
-  float ex = texture(exact, w / N).r;
+  float ex = exactAt(w);
   vec3 c;
   if (mode == 0) c = toneMap(acc.r);
   else if (mode == 1) c = toneMap(px.r);
   else if (mode == 2) c = toneMap(ex);
-  else if (mode == 3) c = ratioColour(acc.r / ex);
-  else if (mode == 4) c = ratioColour(px.r / ex);
+  else if (mode == 3) c = errorColour(acc.r, ex);
+  else if (mode == 4) c = errorColour(px.r, ex);
   else c = ratioColour(acc.g / coverageNorm);
   vec3 structure = vec3(0.3, 0.48, 0.85); // the pixel grid, and a cascade's own lines in the stack
   if (grid == 1) {
@@ -139,7 +169,8 @@ void main() {
     c = mix(c, structure, 0.35 * g * k);
   }
   if (grid == 2) c += structure * 0.3 * min(acc.b, 1.0);
-  if (px.g > 0.5) c = vec3(1.0, 0.85, 0.4);
+  if (px.g > 1.5) c = vec3(0.42, 0.45, 0.52); // a wall
+  else if (px.g > 0.5) c = vec3(1.0, 0.85, 0.4); // a light
   vec3 accent = vec3(1.0, 0.31, 0.85);
   if (selPix.x >= 0.0) {
     vec2 q = (w - selPix) / view.w; // device pixels from the focused pixel's corner
@@ -197,7 +228,7 @@ class Renderer {
     gl.bindVertexArray(this.vao);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instances);
-    for (const [loc, n, off] of [[1, 4, 0], [2, 4, 4], [3, 2, 8], [4, 2, 10]]) {
+    for (const [loc, n, off] of [[1, 4, 0], [2, 4, 4], [3, 2, 8], [4, 2, 10], [5, 1, 15]]) {
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, n, gl.FLOAT, false, STRIDE * 4, off * 4);
       gl.vertexAttribDivisor(loc, 1);
@@ -246,13 +277,16 @@ class Renderer {
     return t;
   }
 
-  upload(sol: Solution, pix: Float32Array, exact: Float32Array, M: number) {
+  upload(sol: Solution, pix: Float32Array) {
     const gl = this.gl;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instances);
     gl.bufferData(gl.ARRAY_BUFFER, sol.lines.subarray(0, sol.count * STRIDE), gl.DYNAMIC_DRAW);
     this.count = sol.count;
     gl.bindTexture(gl.TEXTURE_2D, this.pix);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, sol.N, sol.N, 0, gl.RG, gl.FLOAT, pix);
+  }
+  uploadExact(exact: Float32Array, M: number) {
+    const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.exact);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, M, M, 0, gl.RED, gl.FLOAT, exact);
   }
@@ -319,7 +353,7 @@ class Renderer {
       gl.useProgram(prog);
       gl.uniform4f(u('view'), p.view.x, p.view.y, p.view.span, Math.abs(perPx));
       for (const k of ['extMask', 'mergeMask', 'latticeMask', 'frustumMask', 'profile', 'extMode', 'mergeMode', 'alongW', 'alongV'] as const) gl.uniform1i(u(k), p[k]);
-      gl.uniform1f(u('width'), p.width); gl.uniform1f(u('gain'), p.gain);
+      gl.uniform1f(u('width'), p.width); gl.uniform1f(u('gain'), p.gain); gl.uniform1f(u('guardGain'), p.guardGain);
       gl.bindVertexArray(this.vao);
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.count);
       gl.bindVertexArray(null);
@@ -332,7 +366,7 @@ class Renderer {
     const gl = this.gl, u = this.display.u;
     gl.uniform4f(u('view'), p.view.x, p.view.y, p.view.span, perPx);
     gl.uniform4f(u('vp'), x, y, w, h);
-    gl.uniform1f(u('N'), p.N); gl.uniform1f(u('top'), p.top); gl.uniform1f(u('coverageNorm'), p.coverageNorm);
+    gl.uniform1f(u('N'), p.N); gl.uniform1f(u('top'), p.top); gl.uniform1f(u('coverageNorm'), p.coverageNorm); gl.uniform1f(u('leak'), p.leak);
     gl.uniform1i(u('mode'), p.mode); gl.uniform1i(u('tone'), p.tone); gl.uniform1i(u('grid'), p.grid);
     gl.uniform2f(u('selPix'), p.selPix ? p.selPix[0] : -1, p.selPix ? p.selPix[1] : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -363,7 +397,10 @@ const ANCESTOR = [0.66, 0.55, 1.0];
 type Range = [number, number] | null;
 const S = {
   N: 64,
-  tool: 'move' as 'move' | 'paint' | 'erase',
+  /** move the lights, paint lights or walls, or erase either */
+  tool: 'move' as 'move' | 'paint' | 'wall' | 'erase',
+  /** the reference counts every direction, or only those of the frustums shown */
+  refFrustums: false,
   /** the cascades each pass computes */
   ext: [0, 5] as Range,
   merge: [0, 5] as Range,
@@ -376,10 +413,17 @@ const S = {
   raster: 0,
   average: false,
   show: 0, tone: 0, grid: false, exposure: 0,
+  /** the split and merge rule (defaults: plain) */
+  split: 'plain' as Rule['split'], mergeLinear: false, phase: false, guard: false,
 };
+const rule = (): Rule => ({ split: S.split, mergeLinear: S.mergeLinear, phase: S.phase, guard: S.guard });
+/** guard rays in the stack: drawn faintly, at this weight; the main view leaves them out */
+const GUARD_GAIN = 0.35;
 const K = () => Math.log2(S.N);
 const VIEW = () => ({ x: 0, y: 0, span: S.N });
 let lights: [number, number][] = [];
+/** opaque pixels that emit nothing */
+let walls: [number, number][] = [];
 let injections: Injection[] = [];
 type LineId = { frustum: number; k: number; plane: number; row: number; d: number };
 let focus: { line: LineId } | { pixel: [number, number] } | null = null;
@@ -389,6 +433,18 @@ const setLight = (size: number) => {
   lights = [];
   const cx = 0, cy = Math.floor(S.N / 2) - Math.floor(size / 2);
   for (let i = 0; i < size; i++) for (let j = 0; j < size; j++) lights.push([cx + i, cy + j]);
+};
+/** wall presets beside the light (its bounding box), a column N/8 to its right: an edge over the rows below the light's
+ * middle, a full column with a gap on the light's middle row(s), or a square N/16 across on its middle */
+const setWalls = (kind: 'none' | 'edge' | 'slit' | 'block') => {
+  const N = S.N, ls = lights.length ? lights : [[0, N / 2] as [number, number]];
+  const x1 = Math.max(...ls.map((l) => l[0])) + 1, cy = (Math.min(...ls.map((l) => l[1])) + Math.max(...ls.map((l) => l[1])) + 1) / 2;
+  const wx = Math.min(N - 1, x1 + Math.max(1, N / 8) - 1), s = Math.max(2, N / 16), out: [number, number][] = [];
+  if (kind === 'edge') for (let y = Math.ceil(cy); y < N; y++) out.push([wx, y]);
+  if (kind === 'slit') for (let y = 0; y < N; y++) if (Math.abs(y + 0.5 - cy) >= 1) out.push([wx, y]);
+  if (kind === 'block') for (let i = 0; i < s; i++) for (let j = 0; j < s; j++) out.push([wx + i, Math.round(cy - s / 2) + j]);
+  const lit = new Set(lights.map((l) => l.join()));
+  walls = out.filter(([x, y]) => x < N && y >= 0 && y < N && !lit.has(`${x},${y}`));
 };
 const inRange = (r: Range, k: number) => !!r && k >= r[0] && k <= r[1];
 const bits = (m: number) => { let n = 0; for (; m; m &= m - 1) n++; return n; };
@@ -405,13 +461,15 @@ const passOptions = () => {
     lights: true,
     upFrom: S.ext ? S.ext[0] : 0, upTo: S.ext ? S.ext[1] : -1,
     downFrom: S.merge ? S.merge[1] + 1 : 0, downTo: S.merge ? S.merge[0] : k - 1,
+    rule: rule(),
   };
 };
-const solveKey = () => JSON.stringify([S.N, lights, injections, passOptions()]);
+const solveKey = () => JSON.stringify([S.N, lights, walls, injections, passOptions()]);
 function compute() {
   const N = S.N;
   solvedKey = solveKey();
   const emission = new Float32Array(N * N), solid = new Uint8Array(N * N);
+  for (const [x, y] of walls) solid[x * N + y] = 2;
   for (const [x, y] of lights) { emission[x * N + y] = 1; solid[x * N + y] = 1; }
   sol = solve(N, emission, solid, passOptions(), injections);
 
@@ -426,24 +484,57 @@ function compute() {
   pos.sort((a, b) => a - b);
   autoTop = pos.length ? pos[Math.floor(0.98 * (pos.length - 1))] : 0;
   if (!(autoTop > 0)) {
-    for (let i = 0; i < sol.count; i++) for (const o of [4, 5, 10]) autoTop = Math.max(autoTop, Math.abs(sol.lines[i * STRIDE + o]));
+    for (let i = 0; i < sol.count; i++) if (!sol.lines[i * STRIDE + 15]) for (const o of [4, 5, 10]) autoTop = Math.max(autoTop, Math.abs(sol.lines[i * STRIDE + o]));
     if (!(autoTop > 0)) autoTop = 1;
   }
 
-  const sub = Math.max(2, Math.floor((lights.length > 16 ? 256 : 512) / N)), M = N * sub;
-  const reference = new Float32Array(M * M);
-  for (let j = 0; j < M; j++)
-    for (let i = 0; i < M; i++) {
-      const e = lights.length ? exactAt((i + 0.5) / sub, (j + 0.5) / sub, lights) : 0;
-      reference[j * M + i] = Number.isNaN(e) ? -1 : e;
-    }
   indexLines();
-  main.upload(sol, pix, reference, M);
-  stack.upload(sol, pix, reference, M);
+  main.upload(sol, pix);
+  stack.upload(sol, pix);
+}
+
+// ── the reference: exact, on a sub-grid of the image; with walls (or only the shown frustums' directions) it is
+// computed coarse at once and then refined in slices, so painting and dragging stay live ──
+let referencedKey = '', refBoxes: Box[] = [], refJob = 0;
+const refMask = () => (S.refFrustums ? S.frustums : 15);
+const refKey = () => JSON.stringify([S.N, lights, walls, refMask()]);
+/** the exact fluence at a point of the image (NaN inside a light or wall) */
+const referenceAt = (x: number, y: number) =>
+  !lights.length ? 0 : !walls.length && refMask() === 15 ? exactAt(x, y, lights) : exactOccludedAt(x, y, refBoxes, refMask());
+function startReference() {
+  const N = S.N, job = ++refJob;
+  referencedKey = refKey();
+  refBoxes = boxesOf(N, lights, walls);
+  const sub = Math.max(2, Math.floor((lights.length > 16 || refBoxes.length > 16 ? 256 : 512) / N));
+  /** rows [j0, j1) of the reference at sub samples per pixel */
+  const rows = (out: Float32Array, s: number, j0: number, j1: number) => {
+    const M = N * s;
+    for (let j = j0; j < j1; j++)
+      for (let i = 0; i < M; i++) {
+        const e = referenceAt((i + 0.5) / s, (j + 0.5) / s);
+        out[j * M + i] = Number.isNaN(e) ? -1 : e;
+      }
+  };
+  const upload = (out: Float32Array, s: number) => { main.uploadExact(out, N * s); stack.uploadExact(out, N * s); draw(); };
+  const quick = !walls.length && refMask() === 15;
+  const first = quick ? sub : 2, coarse = new Float32Array((N * first) ** 2);
+  rows(coarse, first, 0, N * first);
+  upload(coarse, first);
+  if (first === sub) return;
+  const fine = new Float32Array((N * sub) ** 2);
+  let j = 0;
+  const step = () => {
+    if (job !== refJob) return;
+    const t0 = performance.now();
+    while (j < N * sub && performance.now() - t0 < 30) { rows(fine, sub, j, Math.min(N * sub, j + 8)); j += 8; }
+    if (j < N * sub) setTimeout(step, 0);
+    else upload(fine, sub);
+  };
+  setTimeout(step, 60);
 }
 
 // ── controls ──
-const { controls, segmented, slider, toggle, syncControls } = createControls(() => changed());
+const { controls, segmented, slider, toggle, pill, syncControls } = createControls(() => changed());
 /** a binding of S[name], saved in the URL as `url` when it differs from its value now (the default) */
 const field = (name: keyof typeof S, url: string = name) => ({ get: () => S[name], set: (v: unknown) => { (S as Record<string, unknown>)[name] = v; }, url: [url, S[name]] as [string, unknown] });
 const FRUSTUMS = ['+x', '−x', '+y', '−y'];
@@ -451,8 +542,17 @@ const fieldWrap = (label: string, body: HTMLElement, title = '') =>
   el('div', { className: 'field', title }, el('div', { className: 'label' }, el('span', { textContent: label })), body);
 
 segmented($('scene'), { label: 'resolution', options: [16, 32, 64, 128].map((n) => [n, String(n)]), get: () => S.N, set: setN });
-segmented($('scene'), { label: 'light', options: [['move', 'move'], ['paint', 'paint'], ['erase', 'erase']], ...field('tool') });
-segmented($('scene'), { options: [[1, '1 px'], [2, '2×2'], [3, '3×3'], [0, 'none']], get: () => -1, set: (n: number) => setLight(n) });
+segmented($('scene'), {
+  label: 'tool',
+  options: [['move', 'move', 'drag the lights'], ['paint', 'light', 'paint light pixels'], ['wall', 'wall', 'paint wall pixels: opaque, emitting nothing'], ['erase', 'erase', 'erase light and wall pixels']],
+  ...field('tool'),
+});
+segmented($('scene'), { label: 'light', options: [[1, '1 px'], [2, '2×2'], [3, '3×3'], [0, 'none']], get: () => -1, set: (n: number) => { setLight(n); const lit = new Set(lights.map((l) => l.join())); walls = walls.filter((w) => !lit.has(w.join())); } });
+segmented($('scene'), {
+  label: 'walls',
+  options: [['none', 'none'], ['edge', 'edge', 'a wall column beside the light over the rows below its middle'], ['slit', 'slit', 'a wall column with a gap on the light\'s middle row(s)'], ['block', 'block', 'a small square in front of the light']],
+  get: () => -1, set: setWalls,
+});
 
 /** a strip of cascades; drag across it to set a range, drag an end to move it, shift-click to extend */
 function rangeStrip(get: () => Range, set: (r: Range) => void) {
@@ -535,6 +635,23 @@ const frustumButtons = FRUSTUMS.map((name, k) => {
 $('passes').append(fieldWrap('frustums', frustumSeg));
 segmented($('passes'), { label: 'cascades drawn', options: [[false, 'sum'], [true, 'average']], ...field('average', 'avg') });
 
+segmented($('rule'), {
+  label: 'split law',
+  options: [
+    ['plain', 'plain', 'an even offset 2a splits into (a, a); an odd one 2a + 1 into (a, a + 1) and (a + 1, a), 1/2 each'],
+    ['jitter', 'jitter', 'from length 8, an even parent also gives 1/8 each to (a − 1, a + 1) and (a + 1, a − 1), keeping 3/4 on (a, a)'],
+    ['jog', 'jog', 'an odd parent splits into straight halves (a, a) and (a + 1, a + 1), the second half started one row off'],
+  ],
+  ...field('split'),
+});
+pill($('rule'), { caption: 'merge split', label: 'linear merge rule', title: 'merge only: an odd parent gives its lower pair M (1/2 + δ) and its upper pair M (1/2 − δ), δ = −(M(u+1) − M(u−1)) / 24M', ...field('mergeLinear', 'mlin') });
+pill($('rule'), { caption: 'tile phase', label: 'half row from L ≥ 8', title: 'tiles of length 8 and up sit half a row up: windows [j + 1/2, j + 3/2] at both planes', ...field('phase') });
+pill($('rule'), {
+  caption: 'guard band', label: 'one offset past 45°',
+  title: 'every level also stores offsets ±(L + 1): rays steeper than 45° with cone weight 0, which carry light but never deliver it; jitter then falls back to plain only where a partner leaves this range, so the diagonals are jittered too. Plain is unchanged. The stack draws guard rays faintly; the main view leaves them out',
+  ...field('guard'),
+});
+
 segmented($('lines'), { label: 'profile across', title: 'in rows: lines with one row offset sit one row apart', options: [[0, 'none'], [1, 'tent'], [2, 'gauss']], ...field('profile') });
 slider($('lines'), { label: 'width', min: 0.05, max: 4, step: 0.05, ...field('width'), format: (v: number) => `${v.toFixed(2)} rows` });
 segmented($('lines'), { label: 'width along', options: [[0, 'even'], [1, 'diamond'], [2, 'opens'], [3, 'closes']], ...field('alongW', 'alongw') });
@@ -549,6 +666,11 @@ segmented($('viewc'), {
   label: 'show', cols: 3,
   options: [[0, 'lines'], [1, 'pixels'], [2, 'reference'], [3, 'lines ÷ ref'], [4, 'pixels ÷ ref'], [5, 'coverage', 'Σ profile × cone weight ÷ 2π: 1 where the lines tile']],
   ...field('show'),
+});
+segmented($('viewc'), {
+  label: 'reference directions',
+  options: [[false, 'all', 'the whole circle of directions'], [true, 'frustums shown', 'only the directions of the frustums shown: a quarter turn each']],
+  ...field('refFrustums', 'reffr'),
 });
 segmented($('viewc'), { label: 'tone', options: [[0, 'linear'], [1, 'log']], ...field('tone') });
 slider($('viewc'), { label: 'exposure', key: '[ ]', min: -6, max: 6, step: 0.25, ...field('exposure'), format: (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)}` });
@@ -633,7 +755,7 @@ function showFocus(i: number) {
       box.innerHTML = `<b>${idText(focus.line)}</b>\nR ${f(L[o + 10])}   T ${f(L[o + 11])}   c ${f(L[o + 7])}\nM ${f(L[o + 4])}   M at end ${f(L[o + 5])}`;
     }
   } else if (focus && 'pixel' in focus && sol) {
-    const [x, y] = focus.pixel, v = sol.fluence[x * S.N + y], e = lights.length ? exactAt(x + 0.5, y + 0.5, lights) : 0;
+    const [x, y] = focus.pixel, v = sol.fluence[x * S.N + y], e = referenceAt(x + 0.5, y + 0.5);
     box.innerHTML = `<b>pixel (${x}, ${y})</b>\nfluence ${f(v)}   reference ${f(e)}\nratio ${f(v / e)}`;
   } else box.innerHTML = 'click a line in a cascade, or a pixel';
   $('injections').textContent = injections.map((j) => `${j.pass} + ${j.value}   ${idText(j)}`).join('\n');
@@ -659,7 +781,8 @@ canvas.addEventListener('pointermove', (e) => {
   if (S.tool !== 'move') { paintAt(wx, wy); return; }
   const dx = Math.round(wx - drag.start[0]), dy = Math.round(wy - drag.start[1]);
   const moved = drag.lights.map(([x, y]) => [x + dx, y + dy] as [number, number]);
-  if (moved.every(([x, y]) => x >= 0 && y >= 0 && x < S.N && y < S.N) && moved.some(([x, y], i) => x !== lights[i][0] || y !== lights[i][1])) {
+  const wall = new Set(walls.map((w) => w.join()));
+  if (moved.every(([x, y]) => x >= 0 && y >= 0 && x < S.N && y < S.N && !wall.has(`${x},${y}`)) && moved.some(([x, y], i) => x !== lights[i][0] || y !== lights[i][1])) {
     lights = moved; changed();
   }
 });
@@ -667,9 +790,11 @@ addEventListener('pointerup', () => (drag = null));
 function paintAt(wx: number, wy: number) {
   const x = Math.floor(wx), y = Math.floor(wy);
   if (x < 0 || y < 0 || x >= S.N || y >= S.N) return;
-  const i = lights.findIndex(([a, b]) => a === x && b === y);
-  if (S.tool === 'paint' && i < 0) { lights.push([x, y]); changed(); }
-  if (S.tool === 'erase' && i >= 0) { lights.splice(i, 1); changed(); }
+  const i = lights.findIndex(([a, b]) => a === x && b === y), w = walls.findIndex(([a, b]) => a === x && b === y);
+  // a light painted over a wall replaces it, and a wall over a light
+  if (S.tool === 'paint' && i < 0) { if (w >= 0) walls.splice(w, 1); lights.push([x, y]); changed(); }
+  if (S.tool === 'wall' && w < 0) { if (i >= 0) lights.splice(i, 1); walls.push([x, y]); changed(); }
+  if (S.tool === 'erase' && (i >= 0 || w >= 0)) { if (i >= 0) lights.splice(i, 1); if (w >= 0) walls.splice(w, 1); changed(); }
 }
 addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement).tagName === 'INPUT') return;
@@ -680,7 +805,10 @@ function setN(n: number) {
   const old = K(), scale = n / S.N;
   S.N = n;
   const k = K(), fit = (r: Range): Range => r && [Math.min(r[0], k - 1), r[1] === old - 1 ? k - 1 : Math.min(r[1], k - 1)];
-  lights = [...new Map(lights.map(([x, y]) => [Math.floor(x * scale), Math.floor(y * scale)] as [number, number]).map((l) => [l.join(), l])).values()];
+  const rescale = (ps: [number, number][]) => [...new Map(ps.map(([x, y]) => [Math.floor(x * scale), Math.floor(y * scale)] as [number, number]).map((l) => [l.join(), l])).values()];
+  lights = rescale(lights);
+  const lit = new Set(lights.map((l) => l.join()));
+  walls = rescale(walls).filter((w) => !lit.has(w.join()));
   S.ext = fit(S.ext); S.merge = fit(S.merge);
   S.draw = S.draw === (1 << old) - 1 ? allLevels() : S.draw & allLevels();
   injections = []; focus = null;
@@ -688,7 +816,7 @@ function setN(n: number) {
 }
 
 // ── URL: every setting round-trips; params at their default are left out ──
-// ext=0-5 | none, draw=0,2 | all | none, frustums=px,ny, lights=x.y,x.y | none, lit=R_px_c3_p5_r2_d-1_v1,…
+// ext=0-5 | none, draw=0,2 | all | none, frustums=px,ny, lights=x.y,x.y | none, walls=x.y,x.y, lit=R_px_c3_p5_r2_d-1_v1,…
 const SIZES = [16, 32, 64, 128];
 const FR_URL = ['px', 'nx', 'py', 'ny'];
 const isInt = (v: number, lo: number, hi: number) => Number.isInteger(v) && v >= lo && v <= hi;
@@ -711,7 +839,7 @@ function parseLit(s: string): Injection | undefined {
   const m = /^([RM])_(px|nx|py|ny)_c(\d+)_p(\d+)_r(\d+)_d(-?\d+)_v(-?[\d.e+-]+)$/.exec(s);
   if (!m) return;
   const [k, plane, row, d, value] = m.slice(3).map(Number);
-  if (!isInt(k, 0, K() - 1) || !isInt(plane, 0, (S.N >> k) - 1) || !isInt(row, 0, 3 * S.N - 1) || !isInt(d, -(1 << k), 1 << k) || !Number.isFinite(value)) return;
+  if (!isInt(k, 0, K() - 1) || !isInt(plane, 0, (S.N >> k) - 1) || !isInt(row, 0, 3 * S.N - 1) || !isInt(d, -(1 << k) - (S.guard ? 1 : 0), (1 << k) + (S.guard ? 1 : 0)) || !Number.isFinite(value)) return;
   return { pass: m[1] as 'R' | 'M', frustum: FR_URL.indexOf(m[2]), k, plane, row, d, value };
 }
 const defaultLights = () => { const keep = lights; setLight(1); const d = lights; lights = keep; return d; };
@@ -728,6 +856,7 @@ function writeURL() {
   if (S.frustums !== 0b0001) p.set('frustums', S.frustums ? FR_URL.filter((_, v) => (S.frustums >> v) & 1).join(',') : 'none');
   const lightsText = (ls: [number, number][]) => (ls.length ? ls.map((l) => l.join('.')).join(',') : 'none');
   if (lightsText(lights) !== lightsText(defaultLights())) p.set('lights', lightsText(lights));
+  if (walls.length) p.set('walls', lightsText(walls));
   if (injections.length) p.set('lit', injections.map(litText).join(','));
   const qs = p.toString().replace(/%2C/g, ','); // commas are legal in a query; keep the lists legible
   history.replaceState(null, '', qs ? '?' + qs : location.pathname);
@@ -751,12 +880,14 @@ function readURL() {
   if (draw !== undefined) S.draw = draw;
   const fr = get('frustums', (s) => (s === 'none' ? 0 : s.split(',').every((t) => FR_URL.includes(t)) ? s.split(',').reduce((m, t) => m | (1 << FR_URL.indexOf(t)), 0) : undefined));
   if (fr !== undefined) S.frustums = fr;
-  const ls = get('lights', (s) => {
+  const pixels = (s: string) => {
     if (s === 'none') return [];
     const out = s.split(',').map((t) => t.split('.').map(Number) as [number, number]);
     return out.every((l) => l.length === 2 && l.every((c) => isInt(c, 0, S.N - 1))) ? [...new Map(out.map((l) => [l.join(), l])).values()] : undefined;
-  });
+  };
+  const ls = get('lights', pixels), ws = get('walls', pixels);
   if (ls) lights = ls;
+  if (ws) { const lit = new Set(lights.map((l) => l.join())); walls = ws.filter((w) => !lit.has(w.join())); }
   const lit = get('lit', (s) => s.split(',').map(parseLit).filter((j): j is Injection => !!j));
   if (lit) injections = lit;
 }
@@ -769,6 +900,7 @@ function changed() {
   for (const s of strips) s.sync();
   frustumButtons.forEach((b, k) => b.classList.toggle('on', !!(S.frustums & (1 << k))));
   if (solveKey() !== solvedKey) compute();
+  if (refKey() !== referencedKey) startReference();
   draw();
 }
 let pending = false;
@@ -785,7 +917,7 @@ function levelTop(k: number) {
   let m = 0;
   for (let i = 0; i < sol.count; i++) {
     const o = i * STRIDE;
-    if (L[o + 8] !== k || !((S.frustums >> L[o + 9]) & 1)) continue;
+    if (L[o + 8] !== k || L[o + 15] || !((S.frustums >> L[o + 9]) & 1)) continue;
     const u = S.extValue === 0 ? L[o + 10] : S.extValue === 1 ? L[o + 11] : L[o + 6];
     const d = S.mergeValue === 0 ? L[o + 4] : S.mergeValue === 1 ? L[o + 5] : Math.max(L[o + 4], L[o + 5]);
     m = Math.max(m, Math.abs((S.drawExt ? u : 0) + (S.drawMerge ? d : 0)));
@@ -806,7 +938,7 @@ function render() {
   if (focus && 'line' in focus) {
     const f = focus.line;
     if (i >= 0) perLevel[f.k].push(...selected);
-    for (const r of relatives(S.N, f)) {
+    for (const r of relatives(S.N, f, rule())) {
       const j = indexOf({ ...r.id, frustum: f.frustum });
       if (j < 0) continue;
       const [cr, cg, cb] = r.up ? ANCESTOR : DESCENDANT;
@@ -820,8 +952,8 @@ function render() {
     ...base, vp: [0, 0, W, H],
     extMask: S.drawExt ? S.draw : 0, mergeMask: S.drawMerge ? S.draw : 0, latticeMask: 0,
     profile: S.profile, width: S.width, alongW: S.alongW, alongV: S.alongV,
-    gain: S.average && shown ? 1 / shown : 1,
-    mode: S.show, tone: S.tone, top: autoTop * 2 ** S.exposure * (S.average || S.show !== 0 ? 1 : Math.max(1, shown)), grid: S.grid ? 1 : 0,
+    gain: S.average && shown ? 1 / shown : 1, guardGain: 0,
+    leak: 1e-3 * autoTop, mode: S.show, tone: S.tone, top: autoTop * 2 ** S.exposure * (S.average || S.show !== 0 ? 1 : Math.max(1, shown)), grid: S.grid ? 1 : 0,
     coverageNorm: 2 * Math.PI * (bits(S.frustums) / 4) * (S.average ? 1 : Math.max(1, shown)),
     raster: S.raster,
     overlay: selected,
@@ -840,8 +972,8 @@ function render() {
       ...base, vp,
       extMask: S.drawExt ? bit : 0, mergeMask: S.drawMerge ? bit : 0, latticeMask: bit,
       profile: 3, width: 1, alongW: 0, alongV: 0,
-      gain: (drawn ? 1 : 0.4) * dim,
-      mode: isPixels ? 1 : 0, tone: 0, top: isPixels ? autoTop * 2 ** S.exposure : levelTop(t.k),
+      gain: (drawn ? 1 : 0.4) * dim, guardGain: GUARD_GAIN,
+      leak: 1e-3 * autoTop, mode: isPixels ? 1 : 0, tone: 0, top: isPixels ? autoTop * 2 ** S.exposure : levelTop(t.k),
       grid: isPixels ? (S.grid ? 1 : 0) : 2, coverageNorm: 1, raster: 0,
       overlay: isPixels ? [] : perLevel[t.k],
     });

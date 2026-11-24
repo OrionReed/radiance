@@ -2,10 +2,10 @@
 // line. Port of wide-rays/wide.ts at spacing 1 (which equals folkjs plain_port/plain.py exactly).
 //
 // One frustum carries light toward +x. Level L has rays of length L between probe planes x = bL and (b+1)L: a ray
-// goes from (bL, row + 1/2) to ((b+1)L, row + 1/2 + d), d = -L … L (… L + 1 with the rule's guard band). Per ray: T (transmittance), R (radiance gathered
-// along it) and M (light arriving at its start from behind, inside its cone: what the merge hands it).
-// A Rule switches the split and merge away from plain: other pairs of halves, a linear merge split, and a half-row tile
-// phase for the longer levels (their rays then run from row + 1/2 + phase).
+// goes from (bL, row + 1/2) to ((b+1)L, row + 1/2 + d), d = -L … L. Per ray: T (transmittance), R (radiance gathered along
+// it) and M (light arriving at its start from behind, inside its cone: what the merge hands it).
+// A Rule switches the merge away from plain (a linear merge split) and adds a half-row tile phase for the longer
+// levels (their rays then run from row + 1/2 + phase).
 // Arrays are [x][y] flattened as x * N + y.
 
 export interface Level {
@@ -22,29 +22,19 @@ export interface Frustum {
   out: Float32Array;
 }
 
-/** a ray's share of the directions: its offset bin [d − 1/2, d + 1/2] / L clipped to 45° both ways, so a guard ray
- * (steeper than 45°) gets exactly 0; inside the frustum the clip changes nothing */
+/** a ray's share of the directions: its offset bin [d − 1/2, d + 1/2] / L clipped to 45° both ways */
 const clip1 = (v: number) => Math.max(-1, Math.min(1, v));
 export const coneWeight = (L: number, d: number) => Math.atan(clip1((d + 0.5) / L)) - Math.atan(clip1((d - 0.5) / L));
 
 /** the cascade's split and merge rule; PLAIN is plain Reciprocal HRC */
 export interface Rule {
-  /** plain; plain plus 1/8 to the two neighbouring pairs of an even parent from length 8 on; or, for an odd parent,
-   * two pairs of straight halves (equal offsets) whose second half starts one row off: a one-row jog at the junction */
-  split: 'plain' | 'jitter' | 'jog';
   /** merge only: an odd parent shares its M between its two pairs by the slope of M across start rows */
   mergeLinear: boolean;
   /** tiles of length 8 and up sit half a row up: windows [j + 1/2, j + 3/2] at both planes */
   phase: boolean;
-  /** a one-offset guard band at every level: offsets |d| <= L + 1 are stored (rises of ±2 across one column at c0).
-   * Guard rays are steeper than 45°: they carry light (jitter can send them some) but have cone weight 0 and the
-   * readout ignores them; jitter falls back to plain only where a partner leaves this extended range */
-  guard: boolean;
 }
-export const PLAIN: Rule = { split: 'plain', mergeLinear: false, phase: false, guard: false };
-/** the offsets beyond ±L a level stores: 1 with the guard band, else 0 */
-export const guardOf = (rule: Rule) => (rule.guard ? 1 : 0);
-const JITTER = 1 / 8, JITTER_FROM = 8, PHASE_FROM = 8;
+export const PLAIN: Rule = { mergeLinear: false, phase: false };
+const PHASE_FROM = 8;
 
 /** the row phase of level L's tiles: its rays start and end at row + 1/2 + phase */
 export const phaseOf = (rule: Rule, L: number) => (rule.phase && L >= PHASE_FROM ? 0.5 : 0);
@@ -55,23 +45,11 @@ export interface Pair { dA: number; a: number; dj: number; b: number; w: number 
 
 /** the pairs of halves of a ray of length L with row offset D under a rule */
 export function pairsOf(rule: Rule, L: number, D: number): Pair[] {
-  const h = L / 2, php = phaseOf(rule, L), phc = phaseOf(rule, h), G = guardOf(rule);
-  // the sampled pairs of a ray inside the frustum keep to the halves' own range, as without the guard band (so plain
-  // stays unchanged by it); only a guard ray's may use the guard offsets
-  if (php !== phc) return sampledPairs(L, D, php, phc, Math.abs(D) > L ? h + G : h);
-  // aligned tiles: plain's pairs, or the split law's
+  const h = L / 2, php = phaseOf(rule, L), phc = phaseOf(rule, h);
+  if (php !== phc) return sampledPairs(L, D, php, phc, h);
+  // aligned tiles: an even offset takes its straight halves, an odd one floor and ceil at 1/2 each
   const a = Math.floor(D / 2);
-  if (D % 2 === 0) {
-    if (rule.split === 'jitter' && L >= JITTER_FROM && Math.abs(a) + 1 <= h + G)
-      return [
-        { dA: 0, a, dj: a, b: a, w: 1 - 2 * JITTER },
-        { dA: 0, a: a - 1, dj: a - 1, b: a + 1, w: JITTER }, // second half starts one row lower
-        { dA: 0, a: a + 1, dj: a + 1, b: a - 1, w: JITTER }, // one row higher
-      ];
-    return [{ dA: 0, a, dj: a, b: a, w: 1 }];
-  }
-  if (rule.split === 'jog')
-    return [{ dA: 0, a, dj: a + 1, b: a, w: 0.5 }, { dA: 0, a: a + 1, dj: a, b: a + 1, w: 0.5 }];
+  if (D % 2 === 0) return [{ dA: 0, a, dj: a, b: a, w: 1 }];
   return [{ dA: 0, a, dj: a, b: a + 1, w: 0.5 }, { dA: 0, a: a + 1, dj: a + 1, b: a, w: 0.5 }];
 }
 
@@ -98,14 +76,14 @@ function sampledPairs(L: number, D: number, php: number, phc: number, Kh: number
   return out;
 }
 
-/** every level's pairs, by parent length L and D + L + G (G: the guard band, guardOf(rule)) */
+/** every level's pairs, by parent length L and D + L */
 const tables = new Map<string, Map<number, Pair[][]>>();
 export function pairTable(N: number, rule: Rule) {
-  const key = `${N} ${rule.split} ${rule.phase} ${rule.guard}`, G = guardOf(rule);
+  const key = `${N} ${rule.phase}`;
   let t = tables.get(key);
   if (!t) {
     t = new Map();
-    for (let L = 2; L <= N; L *= 2) t.set(L, Array.from({ length: 2 * (L + G) + 1 }, (_, i) => pairsOf(rule, L, i - L - G)));
+    for (let L = 2; L <= N; L *= 2) t.set(L, Array.from({ length: 2 * L + 1 }, (_, i) => pairsOf(rule, L, i - L)));
     tables.set(key, t);
   }
   return t;
@@ -136,15 +114,14 @@ export function frustum(N: number, emission: Float32Array, free: Float32Array, o
   const pad = N, rows = N + 2 * pad;
   const e = (x: number, y: number) => (!opt.lights || opt.upFrom > 0 || opt.upTo < 0 || y < pad || y >= pad + N ? 0 : emission[x * N + y - pad]);
   const f = (x: number, y: number) => (y < pad || y >= pad + N ? 0 : free[x * N + y - pad]);
-  const G = guardOf(opt.rule);
-  const at = (L: number, plane: number, row: number, d: number) => (plane * rows + row) * (2 * (L + G) + 1) + d + L + G;
+  const at = (L: number, plane: number, row: number, d: number) => (plane * rows + row) * (2 * L + 1) + d + L;
   const inject = (list: Options['injectR'], L: number, arr: Float32Array) => {
-    for (const r of list) if (1 << r.k === L && r.plane < N / L && r.row >= 0 && r.row < rows && Math.abs(r.d) <= L + G) arr[at(L, r.plane, r.row, r.d)] += r.value;
+    for (const r of list) if (1 << r.k === L && r.plane < N / L && r.row >= 0 && r.row < rows && Math.abs(r.d) <= L) arr[at(L, r.plane, r.row, r.d)] += r.value;
   };
   const T = new Map<number, Float32Array>(), R = new Map<number, Float32Array>();
   const pairs = pairTable(N, opt.rule);
 
-  const T1 = new Float32Array(N * rows * (2 * (1 + G) + 1)), R1 = new Float32Array(T1.length);
+  const T1 = new Float32Array(N * rows * 3), R1 = new Float32Array(T1.length);
   for (let x = 0; x < N; x++)
     for (let y = 0; y < rows; y++) {
       for (let d = -1; d <= 1; d++) {
@@ -152,13 +129,6 @@ export function frustum(N: number, emission: Float32Array, free: Float32Array, o
         T1[i] = f(x, y) * fd;
         R1[i] = e(x, y + d) + fd * e(x, y);
       }
-      // guard rays, rise ±2: they cross the pixels y, y + s, y + 2s of their column, front to back
-      if (G)
-        for (const s of [-1, 1]) {
-          const i = at(1, x, y, 2 * s), f1 = f(x, y + s), f2 = f(x, y + 2 * s);
-          T1[i] = f(x, y) * f1 * f2;
-          R1[i] = e(x, y + 2 * s) + f2 * (e(x, y + s) + f1 * e(x, y));
-        }
     }
   inject(opt.injectR, 1, R1);
   T.set(1, T1); R.set(1, R1);
@@ -166,9 +136,9 @@ export function frustum(N: number, emission: Float32Array, free: Float32Array, o
   // extension: each ray from its two halves
   for (let L = 2; L <= N / 2; L *= 2) {
     const h = L / 2, planes = N / L, Th = T.get(h)!, Rh = R.get(h)!, extend = Math.log2(L) <= opt.upTo && Math.log2(L) > opt.upFrom;
-    const t = new Float32Array(planes * rows * (2 * (L + G) + 1)), r = new Float32Array(t.length);
-    for (let D = -L - G; D <= L + G; D++)
-      for (const { dA, a, dj, b, w } of pairs.get(L)![D + L + G])
+    const t = new Float32Array(planes * rows * (2 * L + 1)), r = new Float32Array(t.length);
+    for (let D = -L; D <= L; D++)
+      for (const { dA, a, dj, b, w } of pairs.get(L)![D + L])
         for (let p = 0; p < planes; p++)
           for (let y = 0; y < rows; y++) {
             const ya = y + dA, yb = y + dj;
@@ -184,14 +154,14 @@ export function frustum(N: number, emission: Float32Array, free: Float32Array, o
   // merge: the light arriving at each ray's start from behind it, longest rays first
   const levels = new Map<number, Level>();
   const Ms = new Map<number, Float32Array>();
-  for (let L = 1; L <= N; L *= 2) Ms.set(L, new Float32Array((N / L) * rows * (2 * (L + G) + 1)));
+  for (let L = 1; L <= N; L *= 2) Ms.set(L, new Float32Array((N / L) * rows * (2 * L + 1)));
   const top = 1 << Math.min(opt.downFrom, Math.log2(N)), bottom = 1 << opt.downTo;
   for (let L = N; L >= 1; L /= 2) {
     const M = Ms.get(L)!;
     if (L < top && L >= bottom) {
       const P = 2 * L, Gp = Ms.get(P)!, Th = T.get(L)!, Rh = R.get(L)!;
-      for (let D = -P - G; D <= P + G; D++) {
-        const c = coneWeight(P, D), ps = pairs.get(P)![D + P + G];
+      for (let D = -P; D <= P; D++) {
+        const c = coneWeight(P, D), ps = pairs.get(P)![D + P];
         // the linear merge rule: of an odd parent's two pairs, the one whose second half starts lower gets
         // M (1/2 + delta) and the other M (1/2 - delta); the injected c·R_A keeps the pairs' own shares
         const linear = opt.rule.mergeLinear && ps.length === 2 && ps.every((q) => q.dA === 0);
@@ -222,7 +192,7 @@ export function frustum(N: number, emission: Float32Array, free: Float32Array, o
   }
   const M = Ms.get(1)!;
 
-  // the pixel readout (guard rays left out): per row offset, the two length-1 rays whose middles bracket the pixel centre
+  // the pixel readout: per row offset, the two length-1 rays whose middles bracket the pixel centre
   const out = new Float32Array(N * N);
   for (let x = 0; x < N; x++)
     for (let y = pad; y < pad + N; y++) {
@@ -245,9 +215,8 @@ export const views = [
   { src: (N: number, x: number, y: number) => y * N + (N - 1 - x), world: (N: number, px: number, py: number) => [py, N - px] },
 ] as const;
 
-/** floats per line: x0 y0 x1 y1, M, M at end, c·R, cone weight c, level, frustum, R, T, start plane, start row, row offset,
- * guard (1 for a guard ray, steeper than 45°) */
-export const STRIDE = 16;
+/** floats per line: x0 y0 x1 y1, M, M at end, c·R, cone weight c, level, frustum, R, T, start plane, start row, row offset */
+export const STRIDE = 15;
 
 export interface Solution {
   N: number;
@@ -263,9 +232,9 @@ export type Injection = RayId & { frustum: number; value: number; pass: 'R' | 'M
 export function solve(N: number, emission: Float32Array, solid: Uint8Array, opt: Omit<Options, 'injectR' | 'injectM'>, injections: Injection[]): Solution {
   const free = new Float32Array(N * N).map((_, i) => (solid[i] ? 0 : 1));
   const fluence = new Float32Array(N * N);
-  const nLevels = Math.log2(N), G = guardOf(opt.rule);
+  const nLevels = Math.log2(N);
   let capacity = 0;
-  for (let h = 1; h <= N / 2; h *= 2) capacity += 4 * (N / h) * (N + 2 * (h + G) + 4) * (2 * (h + G) + 1);
+  for (let h = 1; h <= N / 2; h *= 2) capacity += 4 * (N / h) * (N + 2 * h + 4) * (2 * h + 1);
   const lines = new Float32Array(capacity * STRIDE);
   let count = 0;
   views.forEach((view, v) => {
@@ -279,14 +248,14 @@ export function solve(N: number, emission: Float32Array, solid: Uint8Array, opt:
     const F = frustum(N, em, fr, { ...opt, injectR: mine.filter((j) => j.pass === 'R'), injectM: mine.filter((j) => j.pass === 'M') });
     for (let i = 0; i < N * N; i++) fluence[src[i]] += F.out[i];
     for (const [h, lv] of F.levels) {
-      const level = Math.log2(h), nd = 2 * (h + G) + 1, phase = phaseOf(opt.rule, h);
-      for (let d = -h - G; d <= h + G; d++) {
+      const level = Math.log2(h), nd = 2 * h + 1, phase = phaseOf(opt.rule, h);
+      for (let d = -h; d <= h; d++) {
         const cone = coneWeight(h, d);
         for (let y = 0; y < F.rows; y++) {
           const y0 = y - F.pad + 0.5 + phase, y1 = y0 + d;
           if (Math.max(y0, y1) < -1 || Math.min(y0, y1) > N + 1) continue;
           for (let q = 0; q < N / h; q++) {
-            const i = (q * F.rows + y) * nd + d + h + G;
+            const i = (q * F.rows + y) * nd + d + h;
             const start = lv.M[i], own = cone * lv.R[i], end = lv.T[i] * start + own;
             const [ax, ay] = view.world(N, q * h, y0), [bx, by] = view.world(N, (q + 1) * h, y1);
             const o = count++ * STRIDE;
@@ -294,7 +263,7 @@ export function solve(N: number, emission: Float32Array, solid: Uint8Array, opt:
             lines[o + 4] = start; lines[o + 5] = end; lines[o + 6] = own; lines[o + 7] = cone;
             lines[o + 8] = level; lines[o + 9] = v;
             lines[o + 10] = lv.R[i]; lines[o + 11] = lv.T[i];
-            lines[o + 12] = q; lines[o + 13] = y; lines[o + 14] = d; lines[o + 15] = Math.abs(d) > h ? 1 : 0;
+            lines[o + 12] = q; lines[o + 13] = y; lines[o + 14] = d;
           }
         }
       }
@@ -340,7 +309,7 @@ export function exactAt(px: number, py: number, lights: readonly (readonly [numb
  * its ancestors (the rays it is a half of, up to the top), each with the summed product of the pairs' shares on the way
  * (the linear merge rule's per-row shares are left out: these are the rule's fixed shares) */
 export function relatives(N: number, id: RayId, rule: Rule) {
-  const rows = 3 * N, K = Math.log2(N), pairs = pairTable(N, rule), G = guardOf(rule);
+  const rows = 3 * N, K = Math.log2(N), pairs = pairTable(N, rule);
   const key = (r: RayId) => `${r.k} ${r.plane} ${r.row} ${r.d}`;
   const out: { id: RayId; w: number; up: boolean }[] = [];
   const add = (into: Map<string, { id: RayId; w: number }>, r: RayId, w: number) => {
@@ -352,7 +321,7 @@ export function relatives(N: number, id: RayId, rule: Rule) {
   for (let k = id.k; k > 0; k--) {
     const next = new Map<string, { id: RayId; w: number }>(), L = 1 << k;
     for (const { id: p, w } of level.values())
-      for (const { dA, a, dj, b, w: s } of pairs.get(L)![p.d + L + G]) {
+      for (const { dA, a, dj, b, w: s } of pairs.get(L)![p.d + L]) {
         add(next, { k: k - 1, plane: 2 * p.plane, row: p.row + dA, d: a }, w * s);
         add(next, { k: k - 1, plane: 2 * p.plane + 1, row: p.row + dj, d: b }, w * s);
       }
@@ -364,8 +333,8 @@ export function relatives(N: number, id: RayId, rule: Rule) {
     const next = new Map<string, { id: RayId; w: number }>(), L = 2 << k;
     for (const { id: c, w } of level.values()) {
       const second = c.plane % 2 === 1, plane = c.plane >> 1;
-      for (let D = -L - G; D <= L + G; D++)
-        for (const { dA, a, dj, b, w: s } of pairs.get(L)![D + L + G]) {
+      for (let D = -L; D <= L; D++)
+        for (const { dA, a, dj, b, w: s } of pairs.get(L)![D + L]) {
           if ((second ? b : a) !== c.d) continue;
           add(next, { k: k + 1, plane, row: c.row - (second ? dj : dA), d: D }, w * s);
         }

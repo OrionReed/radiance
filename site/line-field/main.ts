@@ -12,8 +12,6 @@ interface Pass {
   extMode: number; mergeMode: number;
   profile: number; width: number; alongW: number; alongV: number;
   gain: number;
-  /** the weight of guard rays (steeper than 45°, cone weight 0): 0 hides them */
-  guardGain: number;
   /** the fluence above which a pixel in full shadow (reference 0) counts as leak */
   leak: number;
   mode: number; // 0 lines, 1 pixels, 2 exact, 3 lines ÷ exact, 4 pixels ÷ exact, 5 coverage
@@ -31,20 +29,18 @@ layout(location = 1) in vec4 seg;
 layout(location = 2) in vec4 vals;  // M, M at end, c·R, cone weight c
 layout(location = 3) in vec2 meta;  // level, frustum
 layout(location = 4) in vec2 rt;    // R, T
-layout(location = 5) in float guard; // 1: a guard ray, steeper than 45°
 uniform vec4 view;                  // x0, y0, span, world units per device pixel
 uniform int extMask, mergeMask, latticeMask, frustumMask, profile;
-uniform float width, guardGain;     // guard rays' weight: 0 hides them
+uniform float width;
 out float vT, vPerp;
-flat out float vCos, vGain;
+flat out float vCos;
 flat out vec4 vVals;
 flat out vec2 vRT;
 flat out int vExt, vMerge, vLat;
 void main() {
   int lv = int(meta.x + 0.5), fr = int(meta.y + 0.5);
   int ext = (extMask >> lv) & 1, merge = (mergeMask >> lv) & 1, lat = (latticeMask >> lv) & 1;
-  vGain = guard > 0.5 ? guardGain : 1.0;
-  if (ext + merge + lat == 0 || ((frustumMask >> fr) & 1) == 0 || vGain == 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  if (ext + merge + lat == 0 || ((frustumMask >> fr) & 1) == 0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   vec2 d = seg.zw - seg.xy, dir = normalize(d), n = vec2(-dir.y, dir.x);
   float c = max(abs(dir.x), abs(dir.y));
   float halfW = profile == 3 ? 1.5 * view.w : 0.5 * width * c + view.w;
@@ -63,7 +59,7 @@ uniform int profile, extMode, mergeMode, alongW, alongV;
 uniform float width, gain;
 uniform vec4 view;
 in float vT, vPerp;
-flat in float vCos, vGain;
+flat in float vCos;
 flat in vec4 vVals;
 flat in vec2 vRT;
 flat in int vExt, vMerge, vLat;
@@ -80,8 +76,8 @@ void main() {
   float weight = alongV == 1 ? 2.0 * tent : 1.0;
   float extV = extMode == 0 ? vRT.x : extMode == 1 ? vRT.y : vVals.z;
   float mergeV = mergeMode == 0 ? vVals.x : mergeMode == 1 ? vVals.y : mix(vVals.x, vVals.y, t);
-  float val = vGain * (float(vExt) * extV + float(vMerge) * mergeV);
-  float lattice = 0.6 * vGain * float(vLat) * max(0.0, 1.0 - abs(vPerp) / view.w);
+  float val = float(vExt) * extV + float(vMerge) * mergeV;
+  float lattice = 0.6 * float(vLat) * max(0.0, 1.0 - abs(vPerp) / view.w);
   o = vec4(gain * weight * prof * val, gain * weight * prof * vVals.w, lattice, 1.0);
 }`;
 
@@ -228,7 +224,7 @@ class Renderer {
     gl.bindVertexArray(this.vao);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instances);
-    for (const [loc, n, off] of [[1, 4, 0], [2, 4, 4], [3, 2, 8], [4, 2, 10], [5, 1, 15]]) {
+    for (const [loc, n, off] of [[1, 4, 0], [2, 4, 4], [3, 2, 8], [4, 2, 10]]) {
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, n, gl.FLOAT, false, STRIDE * 4, off * 4);
       gl.vertexAttribDivisor(loc, 1);
@@ -353,7 +349,7 @@ class Renderer {
       gl.useProgram(prog);
       gl.uniform4f(u('view'), p.view.x, p.view.y, p.view.span, Math.abs(perPx));
       for (const k of ['extMask', 'mergeMask', 'latticeMask', 'frustumMask', 'profile', 'extMode', 'mergeMode', 'alongW', 'alongV'] as const) gl.uniform1i(u(k), p[k]);
-      gl.uniform1f(u('width'), p.width); gl.uniform1f(u('gain'), p.gain); gl.uniform1f(u('guardGain'), p.guardGain);
+      gl.uniform1f(u('width'), p.width); gl.uniform1f(u('gain'), p.gain);
       gl.bindVertexArray(this.vao);
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.count);
       gl.bindVertexArray(null);
@@ -413,12 +409,10 @@ const S = {
   raster: 0,
   average: false,
   show: 0, tone: 0, grid: false, exposure: 0,
-  /** the split and merge rule (defaults: plain) */
-  split: 'plain' as Rule['split'], mergeLinear: false, phase: false, guard: false,
+  /** the merge rule and tile phase (defaults: plain) */
+  mergeLinear: false, phase: false,
 };
-const rule = (): Rule => ({ split: S.split, mergeLinear: S.mergeLinear, phase: S.phase, guard: S.guard });
-/** guard rays in the stack: drawn faintly, at this weight; the main view leaves them out */
-const GUARD_GAIN = 0.35;
+const rule = (): Rule => ({ mergeLinear: S.mergeLinear, phase: S.phase });
 const K = () => Math.log2(S.N);
 const VIEW = () => ({ x: 0, y: 0, span: S.N });
 let lights: [number, number][] = [];
@@ -484,7 +478,7 @@ function compute() {
   pos.sort((a, b) => a - b);
   autoTop = pos.length ? pos[Math.floor(0.98 * (pos.length - 1))] : 0;
   if (!(autoTop > 0)) {
-    for (let i = 0; i < sol.count; i++) if (!sol.lines[i * STRIDE + 15]) for (const o of [4, 5, 10]) autoTop = Math.max(autoTop, Math.abs(sol.lines[i * STRIDE + o]));
+    for (let i = 0; i < sol.count; i++) for (const o of [4, 5, 10]) autoTop = Math.max(autoTop, Math.abs(sol.lines[i * STRIDE + o]));
     if (!(autoTop > 0)) autoTop = 1;
   }
 
@@ -635,22 +629,8 @@ const frustumButtons = FRUSTUMS.map((name, k) => {
 $('passes').append(fieldWrap('frustums', frustumSeg));
 segmented($('passes'), { label: 'cascades drawn', options: [[false, 'sum'], [true, 'average']], ...field('average', 'avg') });
 
-segmented($('rule'), {
-  label: 'split law',
-  options: [
-    ['plain', 'plain', 'an even offset 2a splits into (a, a); an odd one 2a + 1 into (a, a + 1) and (a + 1, a), 1/2 each'],
-    ['jitter', 'jitter', 'from length 8, an even parent also gives 1/8 each to (a − 1, a + 1) and (a + 1, a − 1), keeping 3/4 on (a, a)'],
-    ['jog', 'jog', 'an odd parent splits into straight halves (a, a) and (a + 1, a + 1), the second half started one row off'],
-  ],
-  ...field('split'),
-});
 pill($('rule'), { caption: 'merge split', label: 'linear merge rule', title: 'merge only: an odd parent gives its lower pair M (1/2 + δ) and its upper pair M (1/2 − δ), δ = −(M(u+1) − M(u−1)) / 24M', ...field('mergeLinear', 'mlin') });
 pill($('rule'), { caption: 'tile phase', label: 'half row from L ≥ 8', title: 'tiles of length 8 and up sit half a row up: windows [j + 1/2, j + 3/2] at both planes', ...field('phase') });
-pill($('rule'), {
-  caption: 'guard band', label: 'one offset past 45°',
-  title: 'every level also stores offsets ±(L + 1): rays steeper than 45° with cone weight 0, which carry light but never deliver it; jitter then falls back to plain only where a partner leaves this range, so the diagonals are jittered too. Plain is unchanged. The stack draws guard rays faintly; the main view leaves them out',
-  ...field('guard'),
-});
 
 segmented($('lines'), { label: 'profile across', title: 'in rows: lines with one row offset sit one row apart', options: [[0, 'none'], [1, 'tent'], [2, 'gauss']], ...field('profile') });
 slider($('lines'), { label: 'width', min: 0.05, max: 4, step: 0.05, ...field('width'), format: (v: number) => `${v.toFixed(2)} rows` });
@@ -839,7 +819,7 @@ function parseLit(s: string): Injection | undefined {
   const m = /^([RM])_(px|nx|py|ny)_c(\d+)_p(\d+)_r(\d+)_d(-?\d+)_v(-?[\d.e+-]+)$/.exec(s);
   if (!m) return;
   const [k, plane, row, d, value] = m.slice(3).map(Number);
-  if (!isInt(k, 0, K() - 1) || !isInt(plane, 0, (S.N >> k) - 1) || !isInt(row, 0, 3 * S.N - 1) || !isInt(d, -(1 << k) - (S.guard ? 1 : 0), (1 << k) + (S.guard ? 1 : 0)) || !Number.isFinite(value)) return;
+  if (!isInt(k, 0, K() - 1) || !isInt(plane, 0, (S.N >> k) - 1) || !isInt(row, 0, 3 * S.N - 1) || !isInt(d, -(1 << k), 1 << k) || !Number.isFinite(value)) return;
   return { pass: m[1] as 'R' | 'M', frustum: FR_URL.indexOf(m[2]), k, plane, row, d, value };
 }
 const defaultLights = () => { const keep = lights; setLight(1); const d = lights; lights = keep; return d; };
@@ -917,7 +897,7 @@ function levelTop(k: number) {
   let m = 0;
   for (let i = 0; i < sol.count; i++) {
     const o = i * STRIDE;
-    if (L[o + 8] !== k || L[o + 15] || !((S.frustums >> L[o + 9]) & 1)) continue;
+    if (L[o + 8] !== k || !((S.frustums >> L[o + 9]) & 1)) continue;
     const u = S.extValue === 0 ? L[o + 10] : S.extValue === 1 ? L[o + 11] : L[o + 6];
     const d = S.mergeValue === 0 ? L[o + 4] : S.mergeValue === 1 ? L[o + 5] : Math.max(L[o + 4], L[o + 5]);
     m = Math.max(m, Math.abs((S.drawExt ? u : 0) + (S.drawMerge ? d : 0)));
@@ -952,7 +932,7 @@ function render() {
     ...base, vp: [0, 0, W, H],
     extMask: S.drawExt ? S.draw : 0, mergeMask: S.drawMerge ? S.draw : 0, latticeMask: 0,
     profile: S.profile, width: S.width, alongW: S.alongW, alongV: S.alongV,
-    gain: S.average && shown ? 1 / shown : 1, guardGain: 0,
+    gain: S.average && shown ? 1 / shown : 1,
     leak: 1e-3 * autoTop, mode: S.show, tone: S.tone, top: autoTop * 2 ** S.exposure * (S.average || S.show !== 0 ? 1 : Math.max(1, shown)), grid: S.grid ? 1 : 0,
     coverageNorm: 2 * Math.PI * (bits(S.frustums) / 4) * (S.average ? 1 : Math.max(1, shown)),
     raster: S.raster,
@@ -972,7 +952,7 @@ function render() {
       ...base, vp,
       extMask: S.drawExt ? bit : 0, mergeMask: S.drawMerge ? bit : 0, latticeMask: bit,
       profile: 3, width: 1, alongW: 0, alongV: 0,
-      gain: (drawn ? 1 : 0.4) * dim, guardGain: GUARD_GAIN,
+      gain: (drawn ? 1 : 0.4) * dim,
       leak: 1e-3 * autoTop, mode: isPixels ? 1 : 0, tone: 0, top: isPixels ? autoTop * 2 ** S.exposure : levelTop(t.k),
       grid: isPixels ? (S.grid ? 1 : 0) : 2, coverageNorm: 1, raster: 0,
       overlay: isPixels ? [] : perLevel[t.k],

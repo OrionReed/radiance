@@ -1,0 +1,806 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Substitution ladders</title>
+    <meta name="description" content="Cut the tiles by any substitution rule (Fibonacci, tribonacci, metallic, plastic) and join them by the Christoffel law, the parent's own line through one random intercept: unbiased at every cut, plain HRC on binary. Box windows are unbiased only at the midpoint, and leave wedges" />
+    <meta name="order" content="5.9" />
+    <meta name="section" content="experimental" />
+    <link rel="stylesheet" href="../_shared/page.css" />
+    <style>
+      #right {
+        border-left: 1px solid var(--line);
+        overflow: hidden;
+      }
+      #tools {
+        margin-top: 0;
+      }
+      @media (max-width: 760px) {
+        html,
+        body {
+          height: auto;
+          overflow: auto;
+        }
+        body {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        #canvas-area {
+          order: -1;
+          height: min(100vw, 72vh);
+        }
+        aside,
+        #right,
+        #explainer {
+          overflow: visible;
+        }
+        #left,
+        #right {
+          border: 0;
+          border-top: 1px solid var(--line);
+        }
+      }
+      #fps {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--dim);
+        margin-right: auto;
+      }
+      #view {
+        position: absolute;
+        image-rendering: pixelated;
+        touch-action: none;
+        cursor: crosshair;
+      }
+      #view.grab {
+        cursor: grab;
+      }
+      #view.grabbing {
+        cursor: grabbing;
+      }
+      #error {
+        position: absolute;
+        inset: 0;
+        display: none;
+        place-items: center;
+        color: var(--dim);
+        padding: 24px;
+        text-align: center;
+      }
+      #error.open {
+        display: grid;
+      }
+      body.locked #pen {
+        opacity: 0.4;
+        pointer-events: none;
+      }
+      #explainer p {
+        line-height: 1.5;
+      }
+      #explainer .note {
+        color: var(--dim);
+        font-size: 11px;
+      }
+      body.locked #view {
+        outline: 2px solid var(--lock);
+        outline-offset: 3px;
+        cursor: default;
+      }
+      #rule {
+        width: 100%;
+        font: 12px var(--mono);
+        color: var(--text);
+        background: var(--ctl);
+        border: 1px solid transparent;
+        border-radius: 4px;
+        padding: 6px 7px;
+        outline: none;
+      }
+      #rule:focus {
+        border-color: var(--faint);
+      }
+      #rule.bad {
+        border-color: #c0504d;
+      }
+      #checks {
+        margin-top: 6px;
+        font: 11px var(--mono);
+        color: var(--dim);
+        line-height: 1.5;
+      }
+      #checks .bad {
+        color: #e07a6c;
+      }
+      #checks .ok {
+        color: var(--accent);
+      }
+      #ladder-svg {
+        display: block;
+        width: 100%;
+      }
+      #ladder-svg text {
+        font: 9px var(--mono);
+        fill: var(--dim);
+      }
+    </style>
+  </head>
+  <body>
+    <aside id="left">
+      <section>
+        <h2>scene <small id="scene-id"></small></h2>
+        <div id="scene-list"></div>
+      </section>
+      <section>
+        <h2>ladder</h2>
+        <div id="presets"></div>
+        <div class="field">
+          <div class="label"><span>substitution</span></div>
+          <input id="rule" spellcheck="false" autocomplete="off" title="x → word, one rule per letter, separated by commas; the first letter is the top tile's. Enter applies" />
+          <div id="checks"></div>
+        </div>
+        <div id="sizes"></div>
+        <div id="law"></div>
+      </section>
+      <section id="pen">
+        <h2><span id="pen-title">pen</span> <small id="pen-sub"></small></h2>
+        <div id="pen-fields"></div>
+        <div id="size-field"></div>
+      </section>
+    </aside>
+
+    <div id="canvas-area">
+      <canvas id="view"></canvas>
+      <div id="help"></div>
+      <div id="error"></div>
+    </div>
+
+    <aside id="right">
+      <section id="explainer">
+        <h2>substitution ladders × Christoffel laws</h2>
+        <p>A cascade cuts every ray into shorter ones: a tile of length P is cut at planes s₁ &lt; … &lt; s<sub>k−1</sub>,
+          and each piece is cut again, down to the pixel. That rule is the ladder. Plain HRC halves every tile.</p>
+        <p>A <b>substitution ladder</b> reads the cuts off a rule on letters. Under a → ab, b → a, a tile of letter a is
+          cut into an a and a b, and a b is an a one level down. The lengths are the Fibonacci numbers, and N, the
+          length of the top word, is the size of the grid. Binary is a → aa.</p>
+        <p>A <b>Christoffel law</b> says where a ray of rise D crosses each cut. It follows the ray's own line, of slope
+          D/P, through one random point U of its start row, so at plane s it is in row ⌊s·D/P + U⌋. That is the
+          Christoffel word of D/P, read at the cuts. Its mean is s·D/P exactly, wherever s falls.</p>
+        <p>So the two fit together at any cut. Every substitution ladder with the Christoffel law is unbiased,
+          reciprocal and right on solid lights. On a → aa it is plain HRC, to the bit.</p>
+        <p><b>Box windows</b> instead join a random point of the start row to a random point of the end row. Their mean
+          is right only at the midpoint, s = P/2. At any other cut it is off by an amount that depends on D, and that
+          error shows as wedges. Switch the law on Fibonacci, and then on binary, where nothing changes.</p>
+        <p class="note">Measured for Fibonacci at N = 89 and 144 (no wedges, solid lights right, spokes as the
+          balanced cut's, more leak and penumbra); argued for the other rules. Tests are drawn for 128²; at other N
+          they are redrawn from their scene units.</p>
+      </section>
+      <section>
+        <h2>the ladder <small id="ladder-sub"></small></h2>
+        <svg id="ladder-svg"></svg>
+      </section>
+      <section>
+        <h2>output</h2>
+        <div id="output"></div>
+        <div id="legend"></div>
+      </section>
+      <section id="tools">
+        <span id="fps" title="wall time of the GPU solve (with its submit), averaged over edits"></span>
+        <button id="shot-btn" title="screenshot (s)">shot</button>
+        <button id="help-btn" title="keyboard shortcuts (?)">?</button>
+      </section>
+    </aside>
+
+    <script type="module">
+      // Scenes are rectangles in scene units, rasterised on the CPU at the ladder's N. ./ladder.ts builds the ladder and
+      // its paths on the CPU; ./gpu.ts uploads them as tables and solves on the GPU.
+      import { parse, format, analyse, tops, buildLadder, PRESETS } from './ladder';
+      import { scenesFor, SPAN } from '../_shared/scenes';
+      import { paint } from '../_shared/raster';
+      import { Reference } from '../_shared/reference';
+      import { DISPLAY_WGSL, EXPOSURE, MAP_INDEX } from '../_shared/display';
+      import { $, el, createControls, fieldFor, writeControls, readControls, sceneFromURL, replaceURL } from '../_shared/ui';
+      import { DRAW_WGSL } from '../_shared/draw';
+      import { outputPanel, EXACT_DENSITY } from '../_shared/output-panel';
+      import { sceneList, penPointer, PEN_SIZES, nextPenSize } from '../_shared/scene-panel';
+      import { rgba } from '../_shared/upload';
+      import { LadderSolver } from './gpu';
+
+      const view = $('view');
+      const MIN_N = 16, MAX_N = 400;
+      // config re-solves when it changes; display only redraws. rule is the substitution's text as applied.
+      const config = { preset: 'fibonacci', rule: PRESETS[2].rule, N: 144, law: 'christoffel' };
+      const display = { scene: false, map: 'tone', stops: 0 };
+      // reference view: 0 none, 1 path trace, 2 exact, 3 and 4 the error against them; the scene locks while one is shown
+      let refMode = 0, reference = null, drawnVersion = -1;
+      const locked = () => refMode !== 0;
+      const pathTracing = () => refMode === 1 || refMode === 3;
+
+      let dirty = true, redraw = true;
+      const touch = () => (dirty = true);
+
+      const { controls, toggle, segmented, slider, pill, syncControls } = createControls(() => changed());
+      const field = fieldFor(() => touch());
+      function refresh() {
+        syncControls();
+        renderLegend();
+        renderLadder();
+      }
+      function changed() {
+        refresh();
+        syncURL();
+      }
+
+      // ── the ladder: rule text → substitution → the tops it reaches → the depth for N ──
+      let sub = parse(config.rule), info = analyse(sub), sizes = tops(sub, MIN_N, MAX_N), ruleError = '';
+      const depthOf = (N) => sizes.find((t) => t.N === N)?.depth;
+      function applyRule(text, preset = 'custom') {
+        const s = parse(text);
+        let err = typeof s === 'string' ? s : '';
+        let a = null, ts = [];
+        if (!err) {
+          a = analyse(s);
+          ts = tops(s, MIN_N, MAX_N);
+          if (!(a.lambda > 1 + 1e-9)) err = 'the lengths do not grow';
+          else if (!a.primitive) err = 'not primitive: no power of its matrix is positive';
+          else if (!ts.length) err = `no top length between ${MIN_N} and ${MAX_N}`;
+        }
+        ruleError = err;
+        $('rule').classList.toggle('bad', !!err);
+        if (err) return renderChecks(), false;
+        sub = s; info = a; sizes = ts;
+        config.rule = format(s);
+        config.preset = PRESETS.find((p) => p.rule === config.rule)?.id ?? preset;
+        if (!depthOf(config.N)) config.N = sizes.filter((t) => t.N <= 150).at(-1)?.N ?? sizes[0].N;
+        $('rule').value = config.rule;
+        renderSizes();
+        renderChecks();
+        touch();
+        return true;
+      }
+      function renderChecks() {
+        const box = $('checks');
+        box.textContent = '';
+        if (ruleError) return box.append(el('span', { className: 'bad', textContent: ruleError }));
+        const flag = (ok, yes, no) => el('span', { className: ok ? 'ok' : 'bad', textContent: ok ? yes : no });
+        box.append(flag(info.primitive, 'primitive', 'not primitive'), ' · ',
+          flag(info.pisot, 'Pisot', 'not Pisot'), el('br'), `λ ${info.lambda.toFixed(4)} · |λ₂| ${info.second.toFixed(3)}`);
+      }
+      segmented($('presets'), {
+        cols: 2, options: PRESETS.map((p) => [p.id, p.name, `${p.rule}: ${p.title}`]),
+        get: () => config.preset, set: (id) => applyRule(PRESETS.find((p) => p.id === id).rule, id),
+      });
+      $('rule').addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') (applyRule(e.target.value), changed(), e.target.blur());
+        if (e.key === 'Escape') (($('rule').value = config.rule), $('rule').classList.remove('bad'), (ruleError = ''), renderChecks(), e.target.blur());
+      });
+      $('rule').addEventListener('change', (e) => (applyRule(e.target.value), changed()));
+      // the tops this rule reaches: N is set by the ladder, so the scene grid follows it
+      function renderSizes() {
+        const box = $('sizes');
+        box.textContent = '';
+        const seg = el('div', { className: 'seg' });
+        for (const { N, depth } of sizes) {
+          const b = el('button', { textContent: String(N), title: `depth ${depth}: |σ^${depth}(${sub.letters[0]})| = ${N}` });
+          b.classList.toggle('on', N === config.N);
+          b.addEventListener('click', () => ((config.N = N), touch(), renderSizes(), changed()));
+          seg.append(b);
+        }
+        box.append(el('div', { className: 'field', title: 'the length of the top word, which is the grid: N × N pixels' }, el('div', { className: 'label' }, el('span', { textContent: 'N, the top length' })), seg));
+      }
+      segmented($('law'), {
+        label: 'junction law', key: 'l',
+        title: "Christoffel: the parent's own line through a random intercept; box windows: a random start and a random end",
+        options: [['christoffel', 'Christoffel', 'j = ⌊s·D/P + U⌋'], ['box', 'box windows', 'j = ⌊(1 − t)u + t(D + v)⌋']],
+        ...field(config, 'law'), url: ['law', 'christoffel'],
+      });
+
+      // the ladder inset: one row per level, top first, each tile a bar coloured by its letter; the gaps are the cuts
+      const LETTER_COLOURS = ['#7fc8a9', '#6f8fd8', '#d89a5a', '#c47fc8', '#c8c07f', '#d86f6f'];
+      function renderLadder() {
+        const svg = $('ladder-svg');
+        if (ruleError && !sizes.length) return;
+        const depth = depthOf(config.N);
+        if (!depth) return;
+        const lad = buildLadderShape(depth);
+        const W = 276, rowH = Math.max(4, Math.min(11, Math.floor(150 / depth))), gap = 2, top = 2, H = top + depth * (rowH + gap) + 14;
+        svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+        const k = W / config.N, parts = [];
+        lad.forEach((row, i) => {
+          const y = top + i * (rowH + gap);
+          for (const [x, L, letter] of row) {
+            const c = LETTER_COLOURS[sub.letters.indexOf(letter) % LETTER_COLOURS.length];
+            parts.push(`<rect x="${(x * k + 0.35).toFixed(2)}" y="${y}" width="${Math.max(0.3, L * k - 0.7).toFixed(2)}" height="${rowH}" fill="${c}" opacity="0.85"><title>${letter}, length ${L}, at ${x}</title></rect>`);
+          }
+        });
+        const yb = top + depth * (rowH + gap) + 10;
+        parts.push(`<text x="0" y="${yb}">0</text><text x="${W}" y="${yb}" text-anchor="end">${config.N}</text>`);
+        const legend = sub.letters.map((x, i) => `<tspan fill="${LETTER_COLOURS[i % LETTER_COLOURS.length]}">${x}</tspan>`).join(' ');
+        parts.push(`<text x="${W / 2}" y="${yb}" text-anchor="middle">${legend} · ${depth} levels</text>`);
+        svg.innerHTML = parts.join('');
+        $('ladder-sub').textContent = `N = ${config.N}`;
+      }
+      // tiles per level as [start, length, letter], top level first, pixels left out
+      function buildLadderShape(depth) {
+        const lens = [new Map(sub.letters.map((x) => [x, 1]))];
+        for (let i = 1; i <= depth; i++) lens.push(new Map(sub.letters.map((x) => [x, [...sub.images.get(x)].reduce((a, y) => a + lens[i - 1].get(y), 0)])));
+        const rows = Array.from({ length: depth }, () => []);
+        const visit = (x, level, letter) => {
+          if (level === 0) return;
+          rows[depth - level].push([x, lens[level].get(letter), letter]);
+          let at = x;
+          for (const y of sub.images.get(letter)) (visit(at, level - 1, y), (at += lens[level - 1].get(y)));
+        };
+        visit(0, depth, sub.letters[0]);
+        return rows;
+      }
+
+      // a shape: { x, y, w, h, b, rgb } in scene units, y down; b its luminance, rgb linear
+      let shapes = [], strokes = [];
+      const scenes = scenesFor({ volumes: false }).map((s) => ({ ...s, shapes: s.shapes.map(({ x, y, w, h, brightness: b, color }) => ({ x, y, w, h, b, rgb: color ?? [b, b, b] })) }));
+
+      // the ladder sets the resolution: a test's own N is not imposed
+      const sceneUI = sceneList({
+        list: $('scene-list'),
+        label: $('scene-id'),
+        scenes,
+        resolution: { get: () => config.N, set: () => {} },
+        load: (s) => {
+          shapes = s.shapes.map((sh) => ({ ...sh, rgb: [...sh.rgb] }));
+          strokes = [];
+          selectShape(null);
+        },
+        after: () => (touch(), syncURL()),
+        changed: () => changed(),
+      });
+      const switchScene = sceneUI.switchTo;
+
+      // pixel (gx, gy), gy down, is index gx N + (N - 1 - gy)
+      let emission = null, solid = null, cursor = null;
+      function rasterise(N) {
+        const preview = cursor && !locked() && pen.kind !== 'eraser' && !pointer.dragging();
+        paint(N, { emission, solid }, { shapes, strokes, cursor: preview ? { x: cursor[0], y: cursor[1], size: pen.size, m: penMaterial() } : null });
+      }
+
+      // pen and shape inspector
+      const KINDS = [
+        ['light', 'light', 'a glowing solid'],
+        ['solid', 'solid', 'solid and dark'],
+        ['eraser', 'eraser', 'erase strokes'],
+      ];
+      const pen = { kind: 'light', brightness: 1, size: 2 };
+      let selected = null;
+      const grey = (b) => [b, b, b];
+      const kindOf = (m) => (m.b > 0 ? 'light' : 'solid');
+      const penMaterial = () => {
+        const b = pen.kind === 'solid' ? 0 : pen.brightness;
+        return { b, rgb: grey(b) };
+      };
+      const setPenSize = (v) => ((pen.size = v), touch(), refresh());
+      const stepPenSize = (d) => setPenSize(nextPenSize(pen.size, d));
+      const setBrightness = (s, b) => {
+        const k = s.b > 0 ? b / s.b : 1;
+        s.rgb = s.b > 0 ? s.rgb.map((c) => c * k) : grey(b);
+        s.b = b;
+      };
+      const setPen = (key, v) => {
+        if (selected && v === 'eraser') return;
+        if (!selected) {
+          pen[key] = v;
+          if (key === 'kind' && v === 'light' && pen.brightness <= 0) pen.brightness = 1;
+        } else if (key === 'kind') setBrightness(selected, v === 'solid' ? 0 : selected.b > 0 ? selected.b : 1);
+        else if (key === 'brightness' && selected.b > 0) setBrightness(selected, Math.max(v, 1e-3));
+        touch();
+      };
+      const penGet = (key) => (selected ? { kind: kindOf(selected), brightness: selected.b }[key] : pen[key]);
+      segmented($('pen-fields'), { cols: 3, options: KINDS, get: () => penGet('kind'), set: (k) => setPen('kind', k) });
+      slider($('pen-fields'), {
+        label: 'brightness', title: "a light's radiance (luminance)", min: 0, max: 4, step: 0.01,
+        get: () => penGet('brightness'), set: (v) => setPen('brightness', v), format: (v) => v.toFixed(2),
+        enabled: () => penGet('kind') === 'light',
+      });
+      function syncPen() {
+        $('pen-title').textContent = selected ? 'shape' : 'pen';
+        $('pen-sub').textContent = selected ? 'selected · ⌫ deletes · esc' : '';
+        $('size-field').style.display = selected ? 'none' : '';
+        refresh();
+      }
+      function selectShape(s) {
+        selected = s;
+        syncPen();
+      }
+      segmented($('size-field'), { label: 'size', options: PEN_SIZES.map((n) => [n, String(n)]), get: () => pen.size, set: setPenSize });
+
+      const output = outputPanel($('output'), {
+        controls: { segmented, slider, pill },
+        display,
+        redraw: () => (redraw = true),
+        reference: { get: () => refMode, set: setReference },
+        referenceTitle: "a reference of the same scene (each pixel's mean), or the scheme's difference from it; the scene locks while one is shown",
+        sceneTitle: 'lights red, solids blue',
+        errorScheme: () => (config.law === 'box' ? 'box windows' : 'Christoffel'),
+        luminance: true,
+      });
+      function renderLegend() {
+        output.legend($('legend'));
+      }
+
+      let urlReady = false;
+      function syncURL() {
+        if (!urlReady) return;
+        const p = new URLSearchParams();
+        if (sceneUI.current !== 0) p.set('scene', scenes[sceneUI.current].id);
+        if (config.preset !== 'fibonacci') p.set('ladder', config.preset);
+        if (config.preset === 'custom') p.set('rule', config.rule);
+        p.set('N', String(config.N));
+        writeControls(p, controls);
+        replaceURL(p);
+      }
+      function loadURL() {
+        const p = new URLSearchParams(location.search);
+        readControls(p, controls);
+        const id = p.get('ladder') ?? 'fibonacci', preset = PRESETS.find((q) => q.id === id);
+        const wantN = Number(p.get('N'));
+        if (!(preset ? applyRule(preset.rule, id) : applyRule(p.get('rule') ?? '')) ) applyRule(PRESETS[2].rule, 'fibonacci');
+        if (depthOf(wantN)) config.N = wantN;
+        renderSizes();
+        return sceneFromURL(p, scenes);
+      }
+
+      const fail = (msg) => {
+        $('error').textContent = msg;
+        $('error').classList.add('open');
+      };
+      const adapter = await navigator.gpu?.requestAdapter();
+      if (!adapter) {
+        fail('WebGPU is not available in this browser.');
+        throw new Error('no WebGPU');
+      }
+      const device = await adapter.requestDevice({
+        requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize },
+      });
+      device.addEventListener('uncapturederror', (e) => {
+        console.error(e.error.message);
+        fail(e.error.message);
+      });
+      const ctx = view.getContext('webgpu');
+      const format_ = navigator.gpu.getPreferredCanvasFormat();
+      ctx.configure({ device, format: format_, alphaMode: 'opaque' });
+
+      // one value per pixel: the scheme's fluence (rgb), the reference's mean radiance over the pixel (luminance); lights
+      // and solids show the scene
+      const drawModule = device.createShaderModule({
+        code: /* wgsl */ `
+        @group(0) @binding(0) var<storage, read> fluence: array<vec4f>;   // (fluence rgb, its luminance), [x * N + y]
+        @group(0) @binding(1) var<storage, read> scene: array<vec4f>;     // (emission rgb, 1 solid / 0 free)
+        struct Draw {
+          view: vec4f,     // N, E / 2π (fluence → exposed mean radiance), map (0 tone map, 1 banded), reference view
+          canvas: vec4f,   // canvas size in device pixels, unused, scene (0 / 1)
+          clip: vec4f,     // error clip (errors of at least it show magenta), unused
+        }
+        @group(0) @binding(2) var<uniform> draw: Draw;
+        @group(0) @binding(3) var<storage, read> reference: array<f32>;   // the reference's mean radiance over each pixel, [x * N + y]
+        ${DISPLAY_WGSL}
+        ${DRAW_WGSL}
+        @fragment fn fragmentMain(@builtin(position) fragment: vec4f) -> @location(0) vec4f {
+          let view = draw.view;
+          let N = i32(view.x); let at = fragment.xy / draw.canvas.xy * view.x;   // pixel units, y down
+          let pixel = vec2i(floor(at));
+          let i = u32(pixel.x * N + (N - 1 - pixel.y));
+          let material = scene[i];
+          let tint = draw.canvas.w > 0.5;
+          let mode = i32(view.w);
+          if (material.w > 0.5) {
+            if (any(material.rgb > vec3f(0.0))) { return vec4f(select(srgbEncode(min(vec3f(1.0), material.rgb * 0.8)), vec3f(1.0, 0.2, 0.15), tint), 1.0); }
+            return vec4f(select(select(vec3f(0.11, 0.115, 0.13), vec3f(1.0), mode >= 3), vec3f(0.15, 0.3, 1.0), tint), 1.0);
+          }
+          let scheme = fluence[i];
+          let exact = reference[i] * 6.2831853;
+          if (mode >= 3) { return vec4f(errorColour(scheme.w, exact, view.y, draw.clip.x), 1.0); }
+          return dither(displayed(select(vec3f(exact), scheme.rgb, mode == 0) * view.y, view.z), fragment.xy);
+        }`,
+      });
+      const drawPipe = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: { module: drawModule, entryPoint: 'vertexMain' },
+        fragment: { module: drawModule, entryPoint: 'fragmentMain', targets: [{ format: format_ }] },
+        primitive: { topology: 'triangle-list' },
+      });
+      const drawUniforms = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+      // the GPU side: the scene and the solved fluence, drawn at N; rebuilt when N changes
+      let grid = null;
+      function gridFor(N) {
+        if (grid?.N === N) return grid;
+        grid?.outputBuffer.destroy();
+        grid?.sceneBuffer.destroy();
+        const buffer = (size, extra = 0) => device.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | extra });
+        grid = { N, outputBuffer: buffer(N * N * 16, GPUBufferUsage.COPY_SRC), sceneBuffer: buffer(N * N * 16), staging: new Float32Array(N * N * 4) };
+        if (reference?.N !== N) {
+          reference?.destroy();
+          reference = new Reference(device, N, { probes: 'cell' });   // pixel means, like the scheme's output
+        }
+        emission = new Float32Array(N * N * 3);
+        solid = new Float32Array(N * N);
+        layout_();
+        return grid;
+      }
+      function encodeDraw(encoder) {
+        device.queue.writeBuffer(drawUniforms, 0, new Float32Array([
+          grid.N, (EXPOSURE * 2 ** display.stops) / (2 * Math.PI), MAP_INDEX[display.map], refMode,
+          view.width, view.height, 0, display.scene ? 1 : 0,
+          output.clip(), 0, 0, 0,
+        ]));
+        const drawBG = device.createBindGroup({
+          layout: drawPipe.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: grid.outputBuffer } },
+            { binding: 1, resource: { buffer: grid.sceneBuffer } },
+            { binding: 2, resource: { buffer: drawUniforms } },
+            { binding: 3, resource: { buffer: pathTracing() ? reference.pathTraceOutput : reference.exactOutput } },
+          ],
+        });
+        const pass = encoder.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
+        pass.setPipeline(drawPipe);
+        pass.setBindGroup(0, drawBG);
+        pass.draw(3);
+        pass.end();
+      }
+
+      function setReference(v) {
+        refMode = v;
+        document.body.classList.toggle('locked', locked());
+        if (locked()) ((cursor = null), selectShape(null));
+        if (!(refMode === 2 || refMode === 4)) reference?.pauseExact();
+        touch();
+      }
+      // mono: lights opaque with their luminance as radiance
+      function uploadReference() {
+        const radiance = new Float32Array(solid.length), transmittance = new Float32Array(solid.length);
+        for (let i = 0; i < solid.length; i++) {
+          radiance[i] = 0.2126 * emission[3 * i] + 0.7152 * emission[3 * i + 1] + 0.0722 * emission[3 * i + 2];
+          transmittance[i] = solid[i] ? 0 : 1;
+        }
+        reference.upload(radiance, transmittance);
+      }
+
+      // the largest square in the canvas area, 32 px margin
+      function layout_() {
+        const r = $('canvas-area').getBoundingClientRect();
+        const d = Math.max(64, Math.floor(Math.min(r.width - 64, r.height - 64)));
+        Object.assign(view.style, { width: d + 'px', height: d + 'px', left: Math.floor((r.width - d) / 2) + 'px', top: Math.floor((r.height - d) / 2) + 'px' });
+        view.width = view.height = Math.round(d * (window.devicePixelRatio || 1));
+        redraw = true;
+      }
+      window.addEventListener('resize', layout_);
+
+      // the solve: on the GPU, in the frame that draws it. The ladder and its tables are rebuilt when the rule, N or law
+      // change; a scene edit only re-uploads the scene.
+      let solver = null, solverKey = '', solved = null, solveMs = 0, timedKey = '', busy = false;
+      const solveKey = () => `${config.rule} ${config.N} ${config.law}`;
+      const waiters = [];
+      function solverFor() {
+        const key = solveKey();
+        if (solver && solverKey === key) return solver;
+        solver?.destroy();
+        solver = null;
+        solverKey = key;
+        const g = gridFor(config.N);
+        try {
+          solver = new LadderSolver(device, buildLadder(sub, depthOf(config.N), config.law), g.sceneBuffer, g.outputBuffer);
+          $('error').classList.remove('open');
+        } catch (err) {
+          fail(err.message);
+        }
+        return solver;
+      }
+
+      function frame() {
+        requestAnimationFrame(frame);
+        step();
+      }
+      async function step() {
+        if (refMode && reference && (reference.version !== drawnVersion || (pathTracing() && reference.pathTraceFrames < 1024))) redraw = true;
+        if (busy || !(dirty || redraw)) return;
+        busy = true;
+        const scene = dirty;
+        dirty = redraw = false;
+        const key = solveKey(), fresh = !(solver && solverKey === key), s = scene ? solverFor() : solver;
+        const g = gridFor(config.N), t0 = performance.now();
+        const encoder = device.createCommandEncoder();
+        if (scene) {
+          rasterise(g.N);
+          device.queue.writeBuffer(g.sceneBuffer, 0, rgba(g.staging, { emission, solid }, 1, 0));
+          if (refMode) uploadReference();
+          s?.encode(encoder);
+        }
+        if (refMode) {
+          if (pathTracing() && reference.pathTraceFrames < 1024) reference.encodePathTrace(encoder);
+          if (refMode === 2 || refMode === 4) reference.startExact(EXACT_DENSITY * g.N);
+          drawnVersion = reference.version;
+          output.status(reference);
+        }
+        encodeDraw(encoder);
+        device.queue.submit([encoder.finish()]);
+        await device.queue.onSubmittedWorkDone();
+        if (scene && s) {
+          solved = { key };
+          if (!fresh) {   // the first solve after a rebuild includes the table upload
+            const ms = performance.now() - t0;
+            solveMs = timedKey === key ? solveMs + (ms - solveMs) * 0.3 : ms;
+            timedKey = key;
+          }
+        }
+        busy = false;
+        if (!dirty) waiters.splice(0).forEach((w) => w());
+        else if (waiters.length) step();
+      }
+      setInterval(() => ($('fps').textContent = !solved ? '' : timedKey === solveKey() ? `${config.N}² · ${solveMs.toFixed(1)} ms GPU wall` : `${config.N}² · edit to time`), 250);
+
+      function screenshot() {
+        const encoder = device.createCommandEncoder();
+        encodeDraw(encoder);
+        device.queue.submit([encoder.finish()]);
+        view.toBlob((b) => b && Object.assign(document.createElement('a'), { href: URL.createObjectURL(b), download: `substitution-ladders-${scenes[sceneUI.current].id}-${config.preset}-${config.N}-${config.law}-${Date.now()}.png` }).click());
+      }
+      $('shot-btn').addEventListener('click', screenshot);
+
+      const KEYS = [
+        ['← →', 'previous / next scene'],
+        ['⇧ 0–9', 'scene 0–9'],
+        ['[ ]', 'previous / next ladder'],
+        ['l', 'Christoffel / box windows'],
+        ['1–3', 'pen: light, solid, eraser'],
+        ['+ −', 'pen size'],
+        ['v', 'scene (lights red, solids blue)'],
+        ['b', 'next map'],
+        ['n', 'new shape'],
+        ['⌫', 'delete selected shape'],
+        ['c', 'clear drawing'],
+        ['s', 'screenshot'],
+        ['?', 'this help'],
+      ];
+      const help = $('help');
+      KEYS.forEach(([k, d]) => help.append(el('div', { className: 'row' }, el('span', {}, ...k.split(' ').map((x) => el('kbd', { textContent: x }))), el('span', { textContent: d }))));
+      const toggleHelp = (force) => {
+        help.classList.toggle('open', force);
+        $('help-btn').classList.toggle('on', help.classList.contains('open'));
+      };
+      $('help-btn').addEventListener('click', () => toggleHelp());
+      const stepLadder = (d) => {
+        const i = PRESETS.findIndex((p) => p.id === config.preset), p = PRESETS[(i + d + PRESETS.length) % PRESETS.length];
+        applyRule(p.rule, p.id);
+        changed();
+      };
+
+      document.addEventListener('keydown', (e) => {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        const t = e.target;
+        if (t instanceof HTMLInputElement && t.type === 'range' && e.key.startsWith('Arrow')) return;
+        const d = e.code.match(/^Digit(\d)$/);
+        if (d) {
+          e.preventDefault();
+          if (e.shiftKey) {
+            switchScene(+d[1]);
+            changed();
+          } else if (!locked() && +d[1] >= 1 && +d[1] <= KINDS.length) (selectShape(null), setPen('kind', KINDS[+d[1] - 1][0]), refresh());
+          return;
+        }
+        let handled = true;
+        switch (e.key) {
+          case 'l': case 'L': config.law = config.law === 'box' ? 'christoffel' : 'box'; touch(); changed(); break;
+          case '[': stepLadder(-1); break;
+          case ']': stepLadder(1); break;
+          case 'v': case 'V': display.scene = !display.scene; redraw = true; changed(); break;
+          case 'b': case 'B': display.map = display.map === 'tone' ? 'banded' : 'tone'; redraw = true; changed(); break;
+          case '?': toggleHelp(); break;
+          case 'Escape': toggleHelp(false); selectShape(null); break;
+          case '=': case '+': stepPenSize(1); break;
+          case '-': case '_': stepPenSize(-1); break;
+          case 'c': case 'C': if (!locked()) ((strokes = []), touch()); break;
+          case 's': case 'S': screenshot(); break;
+          case 'ArrowRight': switchScene(sceneUI.current + 1); changed(); break;
+          case 'ArrowLeft': switchScene(sceneUI.current - 1); changed(); break;
+          case 'n': case 'N':
+            if (locked()) break;
+            shapes.push({ x: -30, y: -30, w: 60, h: 60, ...(pen.kind === 'eraser' ? { b: 0, rgb: grey(0) } : penMaterial()) });
+            selectShape(shapes.at(-1));
+            touch();
+            break;
+          case 'Delete':
+          case 'Backspace':
+            if (selected) {
+              shapes = shapes.filter((s) => s !== selected);
+              selectShape(null);
+              touch();
+            }
+            break;
+          default:
+            handled = false;
+        }
+        if (handled) {
+          e.preventDefault();
+          if (t !== document.body) t?.blur?.();
+        }
+      });
+
+      const pointer = penPointer(view, {
+        span: SPAN,
+        N: () => config.N,
+        locked,
+        shapes: () => shapes,
+        rect: (s) => [s.x, s.y, s.w, s.h],
+        move: (s, x, y) => Object.assign(s, { x, y }),
+        select: selectShape,
+        eraser: () => pen.kind === 'eraser',
+        size: () => pen.size,
+        strokes: { get: () => strokes, set: (s) => (strokes = s), material: () => penMaterial() },
+        cursor: (p) => (cursor = p),
+        touch,
+      });
+
+      // measurement hooks (window.substitutionLadders). settled() resolves once the current config and scene are solved;
+      // errorAgainstExact: relative error against the exact reference over free pixels not next to a light
+      // readFluence: the solved (rgb, luminance) per pixel, [x * N + y] (a hidden page runs no frames, so settled runs one)
+      const settled = () => new Promise((resolve) => {
+        if (!dirty && !busy && solved?.key === solveKey()) return resolve();
+        waiters.push(resolve);
+        step();   // frames may not run (a hidden page), so step here too; it does nothing while one is in flight
+      });
+      const readBack = async (buffer, bytes) => {
+        const staging = device.createBuffer({ size: bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+        const encoder = device.createCommandEncoder();
+        encoder.copyBufferToBuffer(buffer, 0, staging, 0, bytes);
+        device.queue.submit([encoder.finish()]);
+        await staging.mapAsync(GPUMapMode.READ);
+        const out = new Float32Array(staging.getMappedRange().slice(0));
+        staging.destroy();
+        return out;
+      };
+      const readFluence = async () => (await settled(), readBack(grid.outputBuffer, grid.N * grid.N * 16));
+      async function errorAgainstExact(density = EXACT_DENSITY) {
+        await settled();
+        const N = grid.N, fluence = await readFluence();
+        uploadReference();
+        reference.startExact(density * N);
+        while (!reference.exactProgress?.done) await new Promise((resolve) => setTimeout(resolve, 50));
+        const want = await readBack(reference.exactOutput, N * N * 4);
+        const isLight = (i) => emission[3 * i] + emission[3 * i + 1] + emission[3 * i + 2] > 0;
+        let sum = 0, squares = 0, count = 0, schemeSum = 0, exactSum = 0;
+        for (let x = 1; x < N - 1; x++)
+          for (let y = 1; y < N - 1; y++) {
+            const i = x * N + y, e = want[i] * 2 * Math.PI;
+            if (solid[i] || e <= 1e-3) continue;
+            let near = false;
+            for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) near ||= isLight((x + dx) * N + y + dy);
+            if (near) continue;
+            const error = (fluence[4 * i + 3] - e) / e;
+            sum += Math.abs(error); squares += error * error; schemeSum += fluence[4 * i + 3]; exactSum += e; count++;
+          }
+        return { pixels: count, mean: sum / count, rms: Math.sqrt(squares / count), totalRatio: schemeSum / exactSum };
+      }
+      // timeSolve: wall ms of the solve alone (encode, submit, wait), median over runs
+      async function timeSolve(runs = 20) {
+        await settled();
+        const ms = [];
+        for (let k = 0; k < runs; k++) {
+          const t0 = performance.now(), encoder = device.createCommandEncoder();
+          solver.encode(encoder);
+          device.queue.submit([encoder.finish()]);
+          await device.queue.onSubmittedWorkDone();
+          ms.push(performance.now() - t0);
+        }
+        ms.sort((a, b) => a - b);
+        return { N: solver.N, ms: ms[runs >> 1], dispatches: solver.dispatches, MiB: solver.bytes / 2 ** 20 };
+      }
+      window.substitutionLadders = { timeSolve,  config, display, applyRule, settled, readFluence, emissionAndSolid: () => ({ emission, solid }), errorAgainstExact, setReference, switchScene, scenes, touch, changed, buildLadder };
+
+      const initScene = loadURL();
+      urlReady = true;
+      syncPen();
+      refresh();
+      switchScene(initScene);
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>

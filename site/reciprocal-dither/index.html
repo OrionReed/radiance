@@ -1,0 +1,665 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reciprocal HRC, dithered junctions</title>
+    <meta name="description" content="Even rays round their junction row with triangular dither, not box dither: no direction-dependent spokes, exactly reciprocal, at twice plain's blur" />
+    <meta name="order" content="5.8" />
+    <meta name="section" content="experimental" />
+    <link rel="stylesheet" href="../_shared/page.css" />
+    <style>
+      #right {
+        border-left: 1px solid var(--line);
+        overflow: hidden;
+      }
+      #tools {
+        margin-top: 0;
+      }
+      @media (max-width: 760px) {
+        html,
+        body {
+          height: auto;
+          overflow: auto;
+        }
+        body {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        #canvas-area {
+          order: -1;
+          height: min(100vw, 72vh);
+        }
+        aside,
+        #right,
+        #explainer {
+          overflow: visible;
+        }
+        #left,
+        #right {
+          border: 0;
+          border-top: 1px solid var(--line);
+        }
+      }
+      #fps {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--dim);
+        margin-right: auto;
+        cursor: pointer;
+      }
+      .gpu-profiler {
+        position: absolute;
+        left: 12px;
+        top: 12px;
+        z-index: 20;
+      }
+      #view {
+        position: absolute;
+        image-rendering: pixelated;
+        touch-action: none;
+        cursor: crosshair;
+      }
+      #view.grab {
+        cursor: grab;
+      }
+      #view.grabbing {
+        cursor: grabbing;
+      }
+      #error {
+        position: absolute;
+        inset: 0;
+        display: none;
+        place-items: center;
+        color: var(--dim);
+        padding: 24px;
+        text-align: center;
+      }
+      #error.open {
+        display: grid;
+      }
+      body.locked #pen {
+        opacity: 0.4;
+        pointer-events: none;
+      }
+      #explainer p {
+        line-height: 1.5;
+      }
+      body.locked #view {
+        outline: 2px solid var(--lock);
+        outline-offset: 3px;
+        cursor: default;
+      }
+    </style>
+  </head>
+  <body>
+    <aside id="left">
+      <section>
+        <h2>scene <small id="scene-id"></small></h2>
+        <div id="scene-list"></div>
+      </section>
+      <section>
+        <div id="scene-params"></div>
+      </section>
+      <section id="pen">
+        <h2><span id="pen-title">pen</span> <small id="pen-sub"></small></h2>
+        <div id="pen-fields"></div>
+        <div id="size-field"></div>
+      </section>
+    </aside>
+
+    <div id="canvas-area">
+      <canvas id="view"></canvas>
+      <div id="help"></div>
+      <div id="error"></div>
+    </div>
+
+    <aside id="right">
+      <section id="explainer">
+        <h2>dithered junctions</h2>
+        <p>Every ray is two half-length rays joined in the middle. If the middle falls between two rows, plain reciprocal
+          HRC takes each row half the time. If it falls on a row, it takes that row. So rays of some directions are
+          spread and others are not, and the error changes from one direction to the next: spokes.</p>
+        <p>Here a ray whose middle falls on a row also bends by a row either way, ⅛ of the time each. Every ray is now
+          spread by the same amount, and the spokes go.</p>
+        <p>Nothing smaller works. With fixed, non-negative weights, the rays that fall between rows can't be spread any
+          less, so the others must be raised to match. ⅛ / ¾ / ⅛ is the least way to do that.</p>
+        <p>The price is twice plain's blur and about 1.4× the work. Blur scales with the square of the row spacing, so
+          √2 rows per pixel would give exactly plain's blur. That is no cheaper than raising the resolution. Two rows
+          per pixel give half plain's blur.</p>
+        <p>Rays along the axes and diagonals can't bend like that, so they leave lines. The diagonal fix lets diagonal
+          rays bend anyway, into a thin band of rays just past 45° that pass light on but add none of their own. The
+          axis fix puts the one row step of a ray just off an axis near its middle, where a real line's tends to be,
+          with a few extra rays per level. Both keep the transport reciprocal. The diagonal lines go; the axis lines
+          fade but stay.</p>
+      </section>
+      <section>
+        <h2>output</h2>
+        <div id="output"></div>
+        <div id="legend"></div>
+      </section>
+      <section id="tools">
+        <span id="fps" title="wall time per solve, from rasterising to GPU done, averaged over edits; click for the GPU profile"></span>
+        <button id="shot-btn" title="screenshot (s)">shot</button>
+        <button id="help-btn" title="keyboard shortcuts (?)">?</button>
+      </section>
+    </aside>
+
+    <script type="module">
+      // Scenes are rectangles in scene units, rasterised on the CPU; ./dither.ts solves them.
+      import { Dither } from './dither';
+      import { scenesFor, SPAN } from '../_shared/scenes';
+      import { paint } from '../_shared/raster';
+      import { Reference } from '../_shared/reference';
+      import { Profiler } from '../_shared/profiler';
+      import { DISPLAY_WGSL, EXPOSURE, MAP_INDEX } from '../_shared/display';
+      import { $, el, createControls, fieldFor, writeControls, readControls, sceneFromURL, replaceURL } from '../_shared/ui';
+      import { DRAW_WGSL } from '../_shared/draw';
+      import { outputPanel, EXACT_DENSITY } from '../_shared/output-panel';
+      import { sceneList, penPointer, PEN_SIZES, nextPenSize } from '../_shared/scene-panel';
+
+      const view = $('view');
+      // config rebuilds the engine when it changes; display only redraws
+      const config = { N: 256, dither: true, rows: 1, diag: true, axis: true };
+      // the fixes run at one row per pixel only; the diagonal one extends the dither
+      const fixes = () => ({ diag: config.diag && config.dither && config.rows === 1, axis: config.axis && config.rows === 1 });
+      const display = { scene: false, map: 'tone', stops: 0 };
+      // reference view: 0 none, 1 path trace, 2 exact, 3 and 4 the error against them; the scene locks while one is shown
+      let refMode = 0, reference = null, drawnVersion = -1;
+      const locked = () => refMode !== 0;
+      const pathTracing = () => refMode === 1 || refMode === 3;
+
+      let dirty = true, redraw = true;
+      const touch = () => (dirty = true);
+
+      const { controls, toggle, segmented, slider, pill, syncControls } = createControls(() => changed());
+      const field = fieldFor(() => touch());
+      function refresh() {
+        syncControls();
+        renderLegend();
+      }
+      function changed() {
+        refresh();
+        syncURL();
+      }
+
+      // a shape: { x, y, w, h, b, rgb } in scene units, y down; b its luminance, rgb linear
+      let shapes = [], strokes = [];
+      const scenes = scenesFor({ volumes: false }).map((s) => ({ ...s, shapes: s.shapes.map(({ x, y, w, h, brightness: b, color }) => ({ x, y, w, h, b, rgb: color ?? [b, b, b] })) }));
+
+      const sceneUI = sceneList({
+        list: $('scene-list'),
+        label: $('scene-id'),
+        scenes,
+        resolution: { get: () => config.N, set: (n) => (config.N = n) },
+        load: (s) => {
+          shapes = s.shapes.map((sh) => ({ ...sh, rgb: [...sh.rgb] }));
+          strokes = [];
+          selectShape(null);
+        },
+        after: () => (touch(), syncURL()),
+        changed: () => changed(),
+      });
+      const switchScene = sceneUI.switchTo;
+
+      // pixel (gx, gy), gy down, is index gx N + (N - 1 - gy). A shape takes the pixels whose centres it covers, at least
+      // one pixel thick.
+      let emission = null, solid = null, cursor = null;
+      function rasterise(N) {
+        const preview = cursor && !locked() && pen.kind !== 'eraser' && !pointer.dragging();
+        paint(N, { emission, solid }, { shapes, strokes, cursor: preview ? { x: cursor[0], y: cursor[1], size: pen.size, m: penMaterial() } : null });
+      }
+
+      // pen and shape inspector
+      const KINDS = [
+        ['light', 'light', 'a glowing solid'],
+        ['solid', 'solid', 'solid and dark'],
+        ['eraser', 'eraser', 'erase strokes'],
+      ];
+      const pen = { kind: 'light', brightness: 1, size: 2 };
+      let selected = null;
+      const grey = (b) => [b, b, b];
+      const kindOf = (m) => (m.b > 0 ? 'light' : 'solid');
+      const penMaterial = () => {
+        const b = pen.kind === 'solid' ? 0 : pen.brightness;
+        return { b, rgb: grey(b) };
+      };
+      const setPenSize = (v) => ((pen.size = v), touch(), refresh());
+      const stepPenSize = (d) => setPenSize(nextPenSize(pen.size, d));
+      const setBrightness = (s, b) => {
+        const k = s.b > 0 ? b / s.b : 1;
+        s.rgb = s.b > 0 ? s.rgb.map((c) => c * k) : grey(b);
+        s.b = b;
+      };
+      const setPen = (key, v) => {
+        if (selected && v === 'eraser') return;
+        if (!selected) {
+          pen[key] = v;
+          if (key === 'kind' && v === 'light' && pen.brightness <= 0) pen.brightness = 1;
+        } else if (key === 'kind') setBrightness(selected, v === 'solid' ? 0 : selected.b > 0 ? selected.b : 1);
+        else if (key === 'brightness' && selected.b > 0) setBrightness(selected, Math.max(v, 1e-3));
+        touch();
+      };
+      const penGet = (key) => (selected ? { kind: kindOf(selected), brightness: selected.b }[key] : pen[key]);
+      segmented($('pen-fields'), { cols: 3, options: KINDS, get: () => penGet('kind'), set: (k) => setPen('kind', k) });
+      slider($('pen-fields'), {
+        label: 'brightness', title: "a light's radiance (luminance)", min: 0, max: 4, step: 0.01,
+        get: () => penGet('brightness'), set: (v) => setPen('brightness', v), format: (v) => v.toFixed(2),
+        enabled: () => penGet('kind') === 'light',
+      });
+      function syncPen() {
+        $('pen-title').textContent = selected ? 'shape' : 'pen';
+        $('pen-sub').textContent = selected ? 'selected · ⌫ deletes · esc' : '';
+        $('size-field').style.display = selected ? 'none' : '';
+        refresh();
+      }
+      function selectShape(s) {
+        selected = s;
+        syncPen();
+      }
+
+      const SIZES = [64, 128, 256, 512, 1024];
+      segmented($('scene-params'), { label: 'resolution', title: 'tests set their own', options: SIZES.map((n) => [n, String(n)]), ...field(config, 'N'), enabled: () => !scenes[sceneUI.current].N, url: ['N', 256] });
+      toggle($('scene-params'), {
+        label: 'dithered junctions', key: 'd',
+        title: 'on: even rays also take their pairs bent by a row, ⅛ each (triangular dither); off: plain reciprocal HRC',
+        ...field(config, 'dither'), url: ['dither', true],
+      });
+      segmented($('scene-params'), {
+        label: 'rows per pixel',
+        title: "the rays' rows across each axis. Two rows per pixel halve the blur in pixels, at about 4× the stores",
+        options: [[1, '1'], [2, '2']], ...field(config, 'rows'), url: ['rows', 1],
+      });
+      toggle($('scene-params'), {
+        label: 'diagonal fix', key: 'g',
+        title: 'on: rays along the diagonals dither too, through a band of rays just past 45° that carries no light of its own; one row per pixel, with the dither',
+        ...field(config, 'diag'), enabled: () => config.dither && config.rows === 1, url: ['diag', true],
+      });
+      toggle($('scene-params'), {
+        label: 'axis fix', key: 'a',
+        title: 'on: the rays one row off the axes keep their step near the middle, as a real line does, with two more rays per level from 8 px; rise 2 goes plain. One row per pixel',
+        ...field(config, 'axis'), enabled: () => config.rows === 1, url: ['axis', true],
+      });
+      segmented($('size-field'), { label: 'size', options: PEN_SIZES.map((n) => [n, String(n)]), get: () => pen.size, set: setPenSize });
+
+      const output = outputPanel($('output'), {
+        controls: { segmented, slider, pill },
+        display,
+        redraw: () => (redraw = true),
+        reference: { get: () => refMode, set: setReference },
+        referenceTitle: "a reference of the same scene (each pixel's mean), or the scheme's difference from it; the scene locks while one is shown",
+        sceneTitle: 'lights red, solids blue',
+        luminance: true,
+      });
+      function renderLegend() {
+        output.legend($('legend'));
+      }
+
+      let urlReady = false;
+      function syncURL() {
+        if (!urlReady) return;
+        const p = new URLSearchParams();
+        if (sceneUI.current !== 0) p.set('scene', scenes[sceneUI.current].id);
+        writeControls(p, controls, (name, v) => (name === 'N' && sceneUI.freeN ? sceneUI.freeN : v));
+        if (profiler.enabled) p.set('profile', '1');
+        replaceURL(p);
+      }
+      function loadURL() {
+        const p = new URLSearchParams(location.search);
+        readControls(p, controls);
+        if (!SIZES.includes(config.N)) config.N = 256;
+        return sceneFromURL(p, scenes);
+      }
+
+      const fail = (msg) => {
+        $('error').textContent = msg;
+        $('error').classList.add('open');
+      };
+      const adapter = await navigator.gpu?.requestAdapter();
+      if (!adapter) {
+        fail('WebGPU is not available in this browser.');
+        throw new Error('no WebGPU');
+      }
+      const device = await adapter.requestDevice({
+        requiredFeatures: Profiler.features(adapter),
+        requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize },
+      });
+      const profiler = new Profiler(device);
+      $('canvas-area').append(profiler.panel());
+      device.addEventListener('uncapturederror', (e) => {
+        console.error(e.error.message);
+        fail(e.error.message);
+      });
+      const ctx = view.getContext('webgpu');
+      const format = navigator.gpu.getPreferredCanvasFormat();
+      ctx.configure({ device, format, alphaMode: 'opaque' });
+
+      // one value per pixel: the scheme's fluence (rgb), the reference's mean radiance over the pixel (luminance); lights
+      // and solids show the scene
+      const drawModule = device.createShaderModule({
+        code: /* wgsl */ `
+        @group(0) @binding(0) var<storage, read> fluence: array<vec4f>;   // (fluence rgb, its luminance), [x * N + y]
+        @group(0) @binding(1) var<storage, read> scene: array<vec4f>;     // (emission rgb, 1 solid / 0 free)
+        struct Draw {
+          view: vec4f,     // N, E / 2π (fluence → exposed mean radiance), map (0 tone map, 1 banded), reference view
+          canvas: vec4f,   // canvas size in device pixels, unused, scene (0 / 1)
+          clip: vec4f,     // error clip (errors of at least it show magenta), unused
+        }
+        @group(0) @binding(2) var<uniform> draw: Draw;
+        @group(0) @binding(3) var<storage, read> reference: array<f32>;   // the reference's mean radiance over each pixel, [x * N + y]
+        ${DISPLAY_WGSL}
+        ${DRAW_WGSL}
+        @fragment fn fragmentMain(@builtin(position) fragment: vec4f) -> @location(0) vec4f {
+          let view = draw.view;
+          let N = i32(view.x); let at = fragment.xy / draw.canvas.xy * view.x;   // pixel units, y down
+          let pixel = vec2i(floor(at));
+          let i = u32(pixel.x * N + (N - 1 - pixel.y));
+          let material = scene[i];
+          let tint = draw.canvas.w > 0.5;
+          let mode = i32(view.w);
+          if (material.w > 0.5) {
+            if (any(material.rgb > vec3f(0.0))) { return vec4f(select(srgbEncode(min(vec3f(1.0), material.rgb * 0.8)), vec3f(1.0, 0.2, 0.15), tint), 1.0); }
+            return vec4f(select(select(vec3f(0.11, 0.115, 0.13), vec3f(1.0), mode >= 3), vec3f(0.15, 0.3, 1.0), tint), 1.0);
+          }
+          let scheme = fluence[i];
+          let exact = reference[i] * 6.2831853;
+          if (mode >= 3) { return vec4f(errorColour(scheme.w, exact, view.y, draw.clip.x), 1.0); }
+          return dither(displayed(select(vec3f(exact), scheme.rgb, mode == 0) * view.y, view.z), fragment.xy);
+        }`,
+      });
+      const drawPipe = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: { module: drawModule, entryPoint: 'vertexMain' },
+        fragment: { module: drawModule, entryPoint: 'fragmentMain', targets: [{ format }] },
+        primitive: { topology: 'triangle-list' },
+      });
+      const drawUniforms = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+      let engineNow = null;
+      const current = (g) => g?.N === config.N && g.dither === config.dither && g.s === config.rows && g.diag === fixes().diag && g.axis === fixes().axis;
+      function engine() {
+        if (current(engineNow)) return engineNow;
+        const N = config.N;
+        engineNow?.destroy();
+        engineNow = new Dither(device, N, { dither: config.dither, s: config.rows, ...fixes() });
+        profiler.reset();
+        if (reference?.N !== N) {   // the reference depends on the scene and N only
+          reference?.destroy();
+          reference = new Reference(device, N, { probes: 'cell' });   // pixel means, like the scheme's output
+        }
+        emission = new Float32Array(N * N * 3);
+        solid = new Float32Array(N * N);
+        layout_();
+        return engineNow;
+      }
+      function encodeDraw(encoder, cascade, timestampWrites) {
+        device.queue.writeBuffer(drawUniforms, 0, new Float32Array([
+          cascade.N, (EXPOSURE * 2 ** display.stops) / (2 * Math.PI), MAP_INDEX[display.map], refMode,
+          view.width, view.height, 0, display.scene ? 1 : 0,
+          output.clip(), 0, 0, 0,
+        ]));
+        const drawBG = device.createBindGroup({
+          layout: drawPipe.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: cascade.outputBuffer } },
+            { binding: 1, resource: { buffer: cascade.sceneBuffer } },
+            { binding: 2, resource: { buffer: drawUniforms } },
+            { binding: 3, resource: { buffer: pathTracing() ? reference.pathTraceOutput : reference.exactOutput } },
+          ],
+        });
+        const pass = encoder.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }], timestampWrites });
+        pass.setPipeline(drawPipe);
+        pass.setBindGroup(0, drawBG);
+        pass.draw(3);
+        pass.end();
+      }
+
+      function setReference(v) {
+        refMode = v;
+        document.body.classList.toggle('locked', locked());
+        if (locked()) ((cursor = null), selectShape(null));
+        if (!(refMode === 2 || refMode === 4)) reference?.pauseExact();
+        touch();
+      }
+      // mono: lights opaque with their luminance as radiance
+      function uploadReference() {
+        const radiance = new Float32Array(solid.length), transmittance = new Float32Array(solid.length);
+        for (let i = 0; i < solid.length; i++) {
+          radiance[i] = 0.2126 * emission[3 * i] + 0.7152 * emission[3 * i + 1] + 0.0722 * emission[3 * i + 2];
+          transmittance[i] = solid[i] ? 0 : 1;
+        }
+        reference.upload(radiance, transmittance);
+      }
+
+      // the largest square in the canvas area, 32 px margin
+      function layout_() {
+        const r = $('canvas-area').getBoundingClientRect();
+        const d = Math.max(64, Math.floor(Math.min(r.width - 64, r.height - 64)));
+        Object.assign(view.style, { width: d + 'px', height: d + 'px', left: Math.floor((r.width - d) / 2) + 'px', top: Math.floor((r.height - d) / 2) + 'px' });
+        view.width = view.height = Math.round(d * (window.devicePixelRatio || 1));
+        redraw = true;
+      }
+      window.addEventListener('resize', layout_);
+
+      const renderPasses = (cascade) => (profiler.info = `${cascade.dispatches} dispatches per frame · ${(cascade.bytes / 2 ** 20).toFixed(0)} MiB of stores (${Math.round(cascade.bytes / cascade.N / cascade.N)} B per pixel) · ${cascade.readsPerRay.inFrustum.toFixed(2)} reads per ray`);
+
+      // solve only when the scene changed; redraw when the output settings changed
+      let busy = false, frameMs = 0, solveKey = '';
+      const key = () => `${config.N} ${config.dither} ${config.rows} ${fixes().diag} ${fixes().axis}`;
+      async function frame() {
+        requestAnimationFrame(frame);
+        if (refMode && reference && (reference.version !== drawnVersion || (pathTracing() && reference.pathTraceFrames < 1024))) redraw = true;
+        if (busy || !(dirty || redraw || profiler.enabled)) return;
+        busy = true;
+        const scene = dirty, solve = dirty || profiler.enabled;
+        dirty = redraw = false;
+        const fresh = !current(engineNow);
+        const cascade = engine();
+        const t0 = performance.now();
+        if (scene) {
+          rasterise(cascade.N);
+          cascade.upload({ emission, solid });
+          renderPasses(cascade);
+        }
+        profiler.beginFrame();
+        const encoder = device.createCommandEncoder();
+        if (solve) cascade.encodeAll(encoder);
+        if (refMode) {
+          if (scene) uploadReference();
+          if (pathTracing() && reference.pathTraceFrames < 1024) reference.encodePathTrace(encoder);
+          if (refMode === 2 || refMode === 4) reference.startExact(EXACT_DENSITY * cascade.N);
+          drawnVersion = reference.version;
+          output.status(reference);
+        }
+        encodeDraw(encoder, cascade, profiler.timestampWrites('draw'));
+        profiler.endFrame(encoder);
+        device.queue.submit([encoder.finish()]);
+        profiler.collect();
+        await device.queue.onSubmittedWorkDone();
+        if (scene && !fresh) {   // the first solve after a rebuild includes pipeline compilation
+          const ms = performance.now() - t0;
+          frameMs = solveKey === key() ? frameMs + (ms - frameMs) * 0.3 : ms;
+          solveKey = key();
+        }
+        busy = false;
+      }
+      setInterval(() => ($('fps').textContent = profiler.enabled ? `${config.N}² · GPU ${profiler.stats().gpuMs.toFixed(1)} ms, profiled`
+        : solveKey === key() ? `${config.N}² · ${frameMs.toFixed(1)} ms wall` : `${config.N}² · move to time`), 250);
+
+      function screenshot() {
+        const cascade = engine(), encoder = device.createCommandEncoder();
+        encodeDraw(encoder, cascade);
+        device.queue.submit([encoder.finish()]);
+        view.toBlob((b) => b && Object.assign(document.createElement('a'), { href: URL.createObjectURL(b), download: `reciprocal-dither-${scenes[sceneUI.current].id}-${cascade.N}-${config.dither ? 'dithered' : 'plain'}${fixes().diag ? '-diag' : ''}${fixes().axis ? '-axis' : ''}-${Date.now()}.png` }).click());
+      }
+      $('shot-btn').addEventListener('click', screenshot);
+      const toggleProfile = (on = !profiler.enabled) => {
+        profiler.enabled = on;
+        syncURL();
+      };
+      $('fps').addEventListener('click', () => toggleProfile());
+
+      const KEYS = [
+        ['← →', 'previous / next scene'],
+        ['⇧ 0–9', 'scene 0–9'],
+        ['1–3', 'pen: light, solid, eraser'],
+        ['+ −', 'pen size'],
+        ['d', 'dithered junctions on / off'],
+        ['g', 'diagonal fix on / off'],
+        ['a', 'axis fix on / off'],
+        ['v', 'scene (lights red, solids blue)'],
+        ['b', 'next map'],
+        ['n', 'new shape'],
+        ['⌫', 'delete selected shape'],
+        ['c', 'clear drawing'],
+        ['s', 'screenshot'],
+        ['?', 'this help'],
+      ];
+      const help = $('help');
+      KEYS.forEach(([k, d]) => help.append(el('div', { className: 'row' }, el('span', {}, ...k.split(' ').map((x) => el('kbd', { textContent: x }))), el('span', { textContent: d }))));
+      const toggleHelp = (force) => {
+        help.classList.toggle('open', force);
+        $('help-btn').classList.toggle('on', help.classList.contains('open'));
+      };
+      $('help-btn').addEventListener('click', () => toggleHelp());
+
+      document.addEventListener('keydown', (e) => {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        const t = e.target;
+        if (t instanceof HTMLInputElement && t.type === 'range' && e.key.startsWith('Arrow')) return;
+        const d = e.code.match(/^Digit(\d)$/);
+        if (d) {
+          e.preventDefault();
+          if (e.shiftKey) {
+            switchScene(+d[1]);
+            changed();
+          } else if (!locked() && +d[1] >= 1 && +d[1] <= KINDS.length) (selectShape(null), setPen('kind', KINDS[+d[1] - 1][0]), refresh());
+          return;
+        }
+        let handled = true;
+        switch (e.key) {
+          case 'd': case 'D': config.dither = !config.dither; touch(); changed(); break;
+          case 'g': case 'G': if (config.dither && config.rows === 1) ((config.diag = !config.diag), touch(), changed()); break;
+          case 'a': case 'A': if (config.rows === 1) ((config.axis = !config.axis), touch(), changed()); break;
+          case 'v': case 'V': display.scene = !display.scene; redraw = true; changed(); break;
+          case 'b': case 'B': display.map = display.map === 'tone' ? 'banded' : 'tone'; redraw = true; changed(); break;
+          case '?': toggleHelp(); break;
+          case 'Escape': toggleHelp(false); selectShape(null); break;
+          case '=': case '+': stepPenSize(1); break;
+          case '-': case '_': stepPenSize(-1); break;
+          case 'c': case 'C': if (!locked()) ((strokes = []), touch()); break;
+          case 's': case 'S': screenshot(); break;
+          case 'ArrowRight': switchScene(sceneUI.current + 1); changed(); break;
+          case 'ArrowLeft': switchScene(sceneUI.current - 1); changed(); break;
+          case 'n': case 'N':
+            if (locked()) break;
+            shapes.push({ x: -30, y: -30, w: 60, h: 60, ...(pen.kind === 'eraser' ? { b: 0, rgb: grey(0) } : penMaterial()) });
+            selectShape(shapes.at(-1));
+            touch();
+            break;
+          case 'Delete':
+          case 'Backspace':
+            if (selected) {
+              shapes = shapes.filter((s) => s !== selected);
+              selectShape(null);
+              touch();
+            }
+            break;
+          default:
+            handled = false;
+        }
+        if (handled) {
+          e.preventDefault();
+          if (t !== document.body) t?.blur?.();
+        }
+      });
+
+      const pointer = penPointer(view, {
+        span: SPAN,
+        N: () => config.N,
+        locked,
+        shapes: () => shapes,
+        rect: (s) => [s.x, s.y, s.w, s.h],
+        move: (s, x, y) => Object.assign(s, { x, y }),
+        select: selectShape,
+        eraser: () => pen.kind === 'eraser',
+        size: () => pen.size,
+        strokes: { get: () => strokes, set: (s) => (strokes = s), material: () => penMaterial() },
+        cursor: (p) => (cursor = p),
+        touch,
+      });
+
+      // measurement hooks (window.ditherHRC). errorAgainstExact: relative error against the exact reference over free pixels
+      // not next to a light, for the current config, against a reference of density × N directions per pixel (default the
+      // page's); it solves the scene itself, since a hidden page runs no frames.
+      const readBack = async (buffer, bytes) => {
+        const staging = device.createBuffer({ size: bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+        const encoder = device.createCommandEncoder();
+        encoder.copyBufferToBuffer(buffer, 0, staging, 0, bytes);
+        device.queue.submit([encoder.finish()]);
+        await staging.mapAsync(GPUMapMode.READ);
+        const out = new Float32Array(staging.getMappedRange().slice(0));
+        staging.destroy();
+        return out;
+      };
+      async function exact(density = EXACT_DENSITY) {
+        const cascade = engine(), N = cascade.N;
+        cursor = null;
+        rasterise(N);
+        uploadReference();
+        reference.startExact(density * N);
+        while (!reference.exactProgress?.done) await new Promise((resolve) => setTimeout(resolve, 50));
+        return readBack(reference.exactOutput, N * N * 4);
+      }
+      async function errorAgainstExact(density) {
+        const want = await exact(density), cascade = engine(), N = cascade.N;
+        const fluence = await cascade.solve({ emission, solid });
+        const isLight = (i) => emission[3 * i] + emission[3 * i + 1] + emission[3 * i + 2] > 0;
+        let sum = 0, squares = 0, largest = 0, count = 0, above = 0, schemeSum = 0, exactSum = 0;
+        for (let x = 1; x < N - 1; x++)
+          for (let y = 1; y < N - 1; y++) {
+            const i = x * N + y, e = want[i] * 2 * Math.PI;
+            if (solid[i] || e <= 1e-3) continue;
+            let nearLight = false;
+            for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) nearLight ||= isLight((x + dx) * N + y + dy);
+            if (nearLight) continue;
+            const error = (fluence[4 * i + 3] - e) / e;
+            sum += Math.abs(error); squares += error * error; largest = Math.max(largest, Math.abs(error)); above += Math.abs(error) > 1e-2;
+            schemeSum += fluence[4 * i + 3]; exactSum += e; count++;
+          }
+        return { pixels: count, mean: sum / count, rms: Math.sqrt(squares / count), largest, above1e2: above / count, totalRatio: schemeSum / exactSum };
+      }
+      // GPU-done wall time per solve, median of `runs` back-to-back solves (the scene uploaded once)
+      async function time(runs = 20) {
+        const cascade = engine();
+        rasterise(cascade.N);
+        cascade.upload({ emission, solid });
+        const once = async () => {
+          const encoder = device.createCommandEncoder();
+          cascade.encodeAll(encoder);
+          const t0 = performance.now();
+          device.queue.submit([encoder.finish()]);
+          await device.queue.onSubmittedWorkDone();
+          return performance.now() - t0;
+        };
+        await once();
+        const ms = [];
+        for (let k = 0; k < runs; k++) ms.push(await once());
+        ms.sort((a, b) => a - b);
+        return ms[Math.floor(runs / 2)];
+      }
+      const capture = () => new Promise((res) => {
+        const encoder = device.createCommandEncoder(); encodeDraw(encoder, engine()); device.queue.submit([encoder.finish()]); res(view.toDataURL('image/png'));
+      });
+      window.ditherHRC = { config, display, device, engine, touch, capture, profiler, setReference, switchScene, scenes, errorAgainstExact, time, exact, readBack, rasterise: () => (rasterise(engine().N), { emission, solid }), shapes: () => shapes, setShapes: (s) => ((shapes = s), (strokes = []), selectShape(null), touch()), reference: () => reference, stats: () => ({ frameMs }), changed };
+
+      const initScene = loadURL();
+      urlReady = true;
+      if (new URLSearchParams(location.search).get('profile') === '1') toggleProfile(true);
+      syncPen();
+      refresh();
+      layout_();
+      switchScene(initScene);
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>

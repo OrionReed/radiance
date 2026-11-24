@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Wide rays: fewer directions</title>
+    <meta name="description" content="Reciprocal HRC with fewer directions. Rays end in one row (today's rays; gaps between them when directions are coarser) or in a window as wide as the direction spacing (wide rays tile every line). Drag the light; compare with a ray-cast reference." />
+    <meta name="section" content="experimental" />
+    <style>
+      :root { --bg: #0e0e0e; --panel: #151515; --line: rgba(255,255,255,.08); --text: rgba(255,255,255,.82); --dim: rgba(255,255,255,.45); --ctl: rgba(255,255,255,.06); --mono: ui-monospace, 'SF Mono', monospace; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--text); font: 12px/1.4 system-ui, sans-serif; display: grid; grid-template-columns: 250px 1fr; height: 100vh; }
+      aside { background: var(--panel); border-right: 1px solid var(--line); padding: 14px; overflow-y: auto; }
+      h1 { font-size: 13px; font-weight: 500; margin: 0 0 4px; }
+      p { color: var(--dim); margin: 0 0 14px; }
+      label { display: block; color: var(--dim); margin: 12px 0 4px; }
+      select, input[type=range] { width: 100%; }
+      select { background: var(--ctl); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
+      .check { display: flex; gap: 6px; align-items: center; color: var(--text); }
+      #stats { font-family: var(--mono); font-size: 11px; color: var(--dim); white-space: pre; margin-top: 16px; }
+      main { display: flex; gap: 16px; padding: 16px; align-items: flex-start; flex-wrap: wrap; overflow: auto; }
+      figure { margin: 0; }
+      figcaption { color: var(--dim); margin-top: 6px; font-family: var(--mono); font-size: 11px; }
+      canvas { width: min(42vw, 72vh); image-rendering: pixelated; background: #000; cursor: crosshair; display: block; }
+    </style>
+  </head>
+  <body>
+    <aside>
+      <h1>Wide rays</h1>
+      <p>Fewer directions in Reciprocal HRC. Drag on either image to move the light.</p>
+      <label>Directions per frustum</label>
+      <select id="dirs">
+        <option value="all">2L+1 (every rise, today)</option>
+        <option value="half">L+1 (every other rise)</option>
+        <option value="32">32, fixed</option>
+        <option value="16" selected>16, fixed</option>
+        <option value="8">8, fixed</option>
+        <option value="4">4, fixed</option>
+      </select>
+      <label>Ray ends</label>
+      <select id="windows">
+        <option value="wide">wide: as wide as the direction spacing</option>
+        <option value="one row">one row (today's rays)</option>
+      </select>
+      <label>Scene</label>
+      <select id="scene">
+        <option value="walls">light and walls</option>
+        <option value="free">light alone</option>
+        <option value="slats">light and slats</option>
+      </select>
+      <label>Light size</label>
+      <select id="size"><option>1</option><option selected>3</option><option>5</option></select>
+      <label>Resolution</label>
+      <select id="n"><option>64</option><option>128</option></select>
+      <label>Right image</label>
+      <select id="right">
+        <option value="all">2L+1, one-row ends (today)</option>
+        <option value="exact">exact (ray cast)</option>
+        <option value="error">error vs exact</option>
+      </select>
+      <label>Exposure <span id="expv"></span></label>
+      <input type="range" id="exposure" min="-3" max="3" step="0.1" value="0" />
+      <div id="stats"></div>
+    </aside>
+    <main>
+      <figure><canvas id="left"></canvas><figcaption id="leftcap"></figcaption></figure>
+      <figure><canvas id="rightc"></canvas><figcaption id="rightcap"></figcaption></figure>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -13,8 +13,15 @@
 // Both are plain at the midpoint of radix 2.
 //
 // Extension, merge, c0, cone weights, the four frustum views, padding and readout are lab 4 deep-3's (fam.ts), which
-// are plain's (site/line-field/lines.ts). The merge reads the same path objects as the extension, so the transport is
-// reciprocal by construction. Arrays are [x][y] flattened as x · N + y.
+// are plain's (site/line-field/lines.ts). The merge reads the same path objects as the extension, so each frustum's
+// merge is the transpose of its own extension. Arrays are [x][y] flattened as x · N + y.
+//
+// Opposite frustums read the rule backwards. The −x and −y views see the scene mirrored, so with the same rule they
+// would cut the world at planes N − s instead of s, and one frustum would not be the transpose of the other (lab 5
+// deep-2: percent-level reciprocity error on Fibonacci). They run the reversed rule, σ̃(x) = σ(x) read backwards,
+// whose ladder is the mirror of σ's: the same tiles in the world. Both laws are their own reversal (the Christoffel
+// law with its floor keeps U; box windows swap u and v), so nothing else changes. A palindromic rule (a → aa) is its
+// own reversal.
 
 // ── substitutions ──
 
@@ -40,6 +47,10 @@ export function parse(text: string): Substitution | string {
   for (const [x, w] of images) for (const y of w) if (!images.has(y)) return `${x} → ${w}: ${y} has no rule`;
   return { letters, images };
 }
+
+/** the rule read backwards: every image reversed. Its ladder is the mirror of s's. */
+export const reversed = (s: Substitution): Substitution => ({ letters: s.letters, images: new Map([...s.images].map(([x, w]) => [x, [...w].reverse().join('')])) });
+export const palindromic = (s: Substitution) => [...s.images.values()].every((w) => [...w].reverse().join('') === w);
 
 export const format = (s: Substitution) => s.letters.map((x) => `${x} → ${s.images.get(x)}`).join(', ');
 
@@ -159,6 +170,9 @@ export interface Ladder {
   law: Law;
   /** children before parents; the last is the top tile */
   classes: TileClass[];
+  /** the ladder of the reversed rule, for the opposite frustums (−x, −y): the same tiles in the world. Itself when the
+   * rule is palindromic. */
+  opposite: Ladder;
 }
 
 const cone = (L: number, d: number) => { const c = (v: number) => Math.max(-1, Math.min(1, v)); return Math.atan(c((d + 0.5) / L)) - Math.atan(c((d - 0.5) / L)); };
@@ -216,6 +230,12 @@ export function lawPaths(law: Law, P: number, D: number, s: number[]): Path[] {
 }
 
 export function buildLadder(sub: Substitution, depth: number, law: Law): Ladder {
+  const lad = buildOne(sub, depth, law);
+  lad.opposite = palindromic(sub) ? lad : Object.assign(buildOne(reversed(sub), depth, law), { opposite: lad });
+  return lad;
+}
+
+function buildOne(sub: Substitution, depth: number, law: Law): Ladder {
   const ls = lengths(sub, depth), byKey = new Map<string, number>(), classes: (TileClass & { idx: Map<number, number>; kidLists: number[][] })[] = [];
   const classOf = (level: number, letter: string) => {
     const key = level === 0 ? '0' : `${level} ${letter}`;
@@ -261,7 +281,9 @@ export function buildLadder(sub: Substitution, depth: number, law: Law): Ladder 
   const order = classes.map((_, i) => i).sort((a, b) => classes[a].level - classes[b].level);
   const remap = new Map(order.map((o, i) => [o, i]));
   const sorted = order.map((o) => { const { idx: _i, kidLists: _k, ...c } = classes[o]; return { ...c, kids: c.kids.map((k) => remap.get(k)!) }; });
-  return { N, depth, substitution: sub, law, classes: sorted };
+  const lad = { N, depth, substitution: sub, law, classes: sorted } as Ladder;
+  lad.opposite = lad;
+  return lad;
 }
 
 // ── the solve ──
@@ -357,22 +379,23 @@ function frustum(lad: Ladder, emissions: Float32Array[], free: Float32Array): Fl
   });
 }
 
-const views = [
-  (N: number, x: number, y: number) => x * N + y,
-  (N: number, x: number, y: number) => (N - 1 - x) * N + y,
-  (N: number, x: number, y: number) => y * N + x,
-  (N: number, x: number, y: number) => y * N + (N - 1 - x),
+/** the four frustum views, frustum pixel → world pixel, with whether the view runs the opposite way (reversed rule) */
+const views: [(N: number, x: number, y: number) => number, boolean][] = [
+  [(N, x, y) => x * N + y, false],
+  [(N, x, y) => (N - 1 - x) * N + y, true],
+  [(N, x, y) => y * N + x, false],
+  [(N, x, y) => y * N + (N - 1 - x), true],
 ];
 
 /** fluence per pixel per channel: emission is channels × N² (pixel i at i), solid N² (a pixel with emission is solid) */
 export function solveChannels(lad: Ladder, emissions: Float32Array[], solid: ArrayLike<number>): Float32Array[] {
   const N = lad.N, free = new Float32Array(N * N).map((_, i) => (solid[i] ? 0 : 1));
   const fluence = emissions.map(() => new Float32Array(N * N));
-  for (const src of views) {
+  for (const [src, opposite] of views) {
     const fr = new Float32Array(N * N), at = new Int32Array(N * N);
     for (let x = 0; x < N; x++) for (let y = 0; y < N; y++) { const i = src(N, x, y); at[x * N + y] = i; fr[x * N + y] = free[i]; }
     const ems = emissions.map((em) => { const v = new Float32Array(N * N); for (let i = 0; i < N * N; i++) v[i] = em[at[i]]; return v; });
-    const F = frustum(lad, ems, fr);
+    const F = frustum(opposite ? lad.opposite : lad, ems, fr);
     F.forEach((Fc, ch) => { for (let i = 0; i < N * N; i++) fluence[ch][at[i]] += Fc[i]; });
   }
   return fluence;

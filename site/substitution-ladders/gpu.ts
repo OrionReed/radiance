@@ -8,7 +8,8 @@
 // paths. The merge is a gather: each child record sums, over the inverse table, what the paths through it hand it
 // (the same terms as the CPU's scatter), so the transport is the CPU's, in f32. The outside light M is kept for two
 // levels only (ping-pong). The four frustum views run one after another into the same buffers; each view's readout
-// adds into the output, and the last writes the luminance.
+// adds into the output, and the last writes the luminance. The opposite views (−x, −y) read the reversed rule's tables
+// (lad.opposite), so opposite frustums cut the world at the same planes; its records have the same size.
 
 import type { Ladder } from './ladder';
 
@@ -275,15 +276,21 @@ export class LadderSolver {
       this.#buffers.push(b);
       return b;
     };
-    const tab = buffer(table.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
-    device.queue.writeBuffer(tab, 0, table);
+    const upload = (t: Uint32Array) => { const b = buffer(t.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST); device.queue.writeBuffer(b, 0, t); return b; };
+    const tab = upload(table);
+    let oppositeTab = tab;
+    if (lad.opposite !== lad) {
+      const o = tables(lad.opposite);
+      if (o.entries !== entries || o.largestLevel !== largestLevel || o.levels.some((v, i) => i % 4 && v !== levels[i])) throw new Error('the reversed ladder does not match its mirror');
+      oppositeTab = upload(o.table);
+    }
     const records = buffer(entries * 16), M = [buffer(largestLevel * 16), buffer(largestLevel * 16)];
     this.bytes = this.#buffers.reduce((s, b) => s + b.size, 0);
     const { layout, pipelines } = programFor(device);
     const add = (pipeline: GPUComputePipeline, view: number, level: number, count: number, above: GPUBuffer, here: GPUBuffer) => {
       const params = buffer(32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
       device.queue.writeBuffer(params, 0, new Uint32Array([level, view, N, rows, depth, 0, 0, 0]));
-      const resources = [params, scene, records, above, here, tab, output];
+      const resources = [params, scene, records, above, here, view % 2 ? oppositeTab : tab, output];
       this.#program.push({ pipeline, count, bindGroup: device.createBindGroup({ layout, entries: resources.map((b, binding) => ({ binding, resource: { buffer: b } })) }) });
     };
     const count = (l: number) => levels[4 * l + 3];

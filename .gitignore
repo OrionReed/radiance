@@ -11,3 +11,18 @@ site/_harness/*fragcoord*.html
 site/_harness/reciprocal-hrc-lab.html
 site/polygonal-dual/
 site/_harness/polygonal-dual.html
+# test harnesses and their reference data: local tooling, not pages
+site/_harness/
+site/**/ref/
+*.bin
+# working notes and figures beside pages
+site/**/NOTES.md
+site/**/SIMPLER.md
+site/**/figures/
+# local pages: kept as reference, not public
+site/reciprocal-energy/
+site/reciprocal-bounce/
+site/reciprocal-lens/
+site/reciprocal-napkin/
+site/reciprocal-radix/
+site/reciprocal-fragcoord-napkin/
